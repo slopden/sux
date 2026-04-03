@@ -23,6 +23,7 @@ jobs:
           path: build/sux
 
   build:
+    needs: [test]
     strategy:
       fail-fast: false
       matrix:
@@ -39,9 +40,6 @@ jobs:
           - os: macos-15-intel
             artifact: sux-macos-x64
             ext: ""
-          - os: windows-latest
-            artifact: sux-windows-x64
-            ext: ".exe"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -111,7 +109,7 @@ jobs:
           # Flatten artifacts into release dir
           mkdir -p release
           cp artifacts/sux-single-file/sux release/sux
-          for dir in artifacts/sux-linux-* artifacts/sux-macos-* artifacts/sux-windows-*; do
+          for dir in artifacts/sux-linux-* artifacts/sux-macos-*; do
             cp "$dir"/* release/ 2>/dev/null || true
           done
           chmod +x release/sux release/sux-linux-* release/sux-macos-* 2>/dev/null || true
