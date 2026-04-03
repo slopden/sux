@@ -6,6 +6,22 @@
 
 A tmux wrapper with sandboxing and screen keybindings that mounts your Claude settings into a container so you can run in pretty-much-yolo-mode. Probably not perfect, but still much better than no sandbox. You can also run "just tmux" sessions with no sandbox, but I wouldn't run yolo-mode without aa sandbox.
 
+## Linux Install
+
+You'll have to install `tmux` and `docker` yourself to get anything out of this.
+
+Then, if you have `uv` installed you can use the single-file script version of `sux` which is easy to edit locally and much smaller:
+```bash
+curl -Lo ~/.local/bin/sux https://github.com/slopden/sux/releases/latest/download/sux && chmod +x ~/.local/bin/sux
+```
+
+`sux` is also packaged as a self-contained executable using [nuitka](https://nuitka.net/) which has no runtime dependencies:
+```bash
+curl -Lo ~/.local/bin/sux https://github.com/slopden/sux/releases/latest/download/sux-linux-x64 && chmod +x ~/.local/bin/sux
+```
+
+
+
 ## Workflow
 
 Set up docker and Claude in your main system. Then you can run on a git repo:
