@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: make single
+      - run: make test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sux-single-file
+          path: build/sux
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: sux-linux-x64
+            ext: ""
+          - os: ubuntu-24.04-arm
+            artifact: sux-linux-arm64
+            ext: ""
+          - os: macos-latest
+            artifact: sux-macos-arm64
+            ext: ""
+          - os: macos-15-large
+            artifact: sux-macos-x64
+            ext: ""
+          - os: windows-latest
+            artifact: sux-windows-x64
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Install patchelf (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y patchelf
+
+      - name: Build binary
+        shell: bash
+        env:
+          PYTHONPATH: src
+        run: |
+          uv run -m nuitka --standalone --onefile \
+            --output-dir=build \
+            --output-filename=${{ matrix.artifact }}${{ matrix.ext }} \
+            --include-package=sux \
+            src/sux/__main__.py
+
+      - name: Smoke test
+        shell: bash
+        run: build/${{ matrix.artifact }}${{ matrix.ext }} --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/${{ matrix.artifact }}${{ matrix.ext }}
+
+  release:
+    needs: [test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag exists
+        id: check
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all artifacts
+        if: steps.check.outputs.exists == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Flatten artifacts into release dir
+          mkdir -p release
+          cp artifacts/sux-single-file/sux release/sux
+          for dir in artifacts/sux-linux-* artifacts/sux-macos-* artifacts/sux-windows-*; do
+            cp "$dir"/* release/ 2>/dev/null || true
+          done
+          chmod +x release/sux release/sux-linux-* release/sux-macos-* 2>/dev/null || true
+          ls -la release/
+
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "sux ${{ steps.version.outputs.tag }}" \
+            --generate-notes \
+            release/*
+
+  pypi:
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if version exists on PyPI
+        id: check
+        run: |
+          if uv pip install --dry-run "sux==${{ steps.version.outputs.version }}" 2>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and publish
+        if: steps.check.outputs.exists == 'false'
+        continue-on-error: true
+        run: |
+          uv build --out-dir build
+          uv publish build/*

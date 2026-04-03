@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" rx="32" fill="#1e1e2e"/>
+  <!-- tmux layer -->
+  <rect x="24" y="24" width="208" height="208" rx="18" fill="none" stroke="#5f5faf" stroke-width="4"/>
+  <!-- docker layer -->
+  <rect x="48" y="48" width="160" height="160" rx="14" fill="none" stroke="#0db7ed" stroke-width="4"/>
+  <!-- git layer -->
+  <rect x="72" y="72" width="112" height="112" rx="10" fill="none" stroke="#f34f29" stroke-width="4"/>
+  <!-- sux text -->
+  <text x="128" y="138" font-family="'SF Mono','Fira Code','Consolas',monospace" font-size="42" font-weight="700" fill="#00ff41" text-anchor="middle" letter-spacing="2">sux</text>
+</svg>

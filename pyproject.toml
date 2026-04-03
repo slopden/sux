@@ -1,0 +1,45 @@
+[project]
+name = "sux"
+version = "0.1.0"
+description = "A tmux wrapper with sandboxing and screen keybindings"
+requires-python = ">=3.10"
+license = "MIT"
+
+[project.scripts]
+sux = "sux.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sux"]
+
+[dependency-groups]
+dev = ["ruff", "nuitka", "patchelf", "zstandard", "pytest"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "D",       # pydocstyle
+    "ANN",     # flake8-annotations
+    "T20",     # flake8-print
+    "S",       # bandit
+    "EM",      # flake8-errmsg
+    "TRY003",  # long exception messages
+    "COM812",  # trailing comma conflicts with formatter
+    "ISC001",  # implicit string concat conflicts with formatter
+    "FBT",     # boolean trap
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/sux/constants.py" = ["E501"]
+"build/*" = ["E501", "INP001"]
+"tests/*" = ["INP001", "PLR2004"]
+
+[tool.ruff.format]
+quote-style = "double"
