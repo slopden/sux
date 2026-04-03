@@ -60,6 +60,7 @@ jobs:
             --output-dir=build \
             --output-filename=${{ matrix.artifact }}${{ matrix.ext }} \
             --include-package=sux \
+            --include-data-dir=src/sux/resources=sux/resources \
             src/sux/__main__.py
 
       - name: Smoke test

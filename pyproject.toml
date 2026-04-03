@@ -16,7 +16,7 @@ build-backend = "hatchling.build"
 packages = ["src/sux"]
 
 [dependency-groups]
-dev = ["ruff", "nuitka", "patchelf", "zstandard", "pytest"]
+dev = ["ruff", "nuitka", "patchelf; sys_platform == 'linux'", "zstandard", "pytest"]
 
 [tool.ruff]
 target-version = "py310"

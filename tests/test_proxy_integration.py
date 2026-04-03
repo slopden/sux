@@ -57,6 +57,9 @@ def proxy_sock(tmp_path_factory):
         os.kill(pid, signal.SIGTERM)
         pytest.fail("Proxy did not start")
 
+    # Pull alpine image through the proxy so tests can create containers
+    asyncio.run(_send_request(sock, "POST", "/images/create?fromImage=alpine&tag=latest", b""))
+
     yield sock
     os.kill(pid, signal.SIGTERM)
     time.sleep(0.1)

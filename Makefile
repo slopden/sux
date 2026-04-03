@@ -14,6 +14,7 @@ executable: build/sux
 		--output-dir=build \
 		--output-filename=sux-bin \
 		--include-package=sux \
+		--include-data-dir=src/sux/resources=sux/resources \
 		src/sux/__main__.py
 
 test: build/sux
