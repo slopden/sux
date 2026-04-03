@@ -36,7 +36,7 @@ jobs:
           - os: macos-latest
             artifact: sux-macos-arm64
             ext: ""
-          - os: macos-15-large
+          - os: macos-15-intel
             artifact: sux-macos-x64
             ext: ""
           - os: windows-latest
