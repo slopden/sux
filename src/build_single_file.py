@@ -5,6 +5,7 @@
 """Collapse src/sux/ into a single executable Python file."""
 
 import ast
+import os
 import sys
 from pathlib import Path
 
@@ -29,38 +30,11 @@ UV_SCRIPT_META = """\
 # requires-python = ">=3.10"
 # ///"""
 
-SRC_DIR = Path("src/sux")
+BASE_DIR = Path(os.path.abspath(os.path.dirname(__file__)))
+SRC_DIR = BASE_DIR / "sux"
 
-# Read the docstring from cli.py's MODULE_DOC
-DOCSTRING = '''\
-"""
-sux - a tmux wrapper with sandboxing and screen keybindings
-
-Modes:
-  tmux      `sux <name>` creates or attaches to a named tmux session.
-            `sux` with no args attaches to the most recent session.
-
-  docker    `sux -d <name>` mounts the current directory into an isolated
-            Docker container with rust, uv, node, and claude-code.
-            Non-root user with sudo and NVIDIA GPU passthrough.
-            `sux <name>` will automatically reattach if a container exists.
-
-  worktree  `sux -w <name>` creates a git worktree in ./worktrees/<name>
-            on a new branch and opens a tmux session in it.
-
-  combined  `sux -w -d <name>` creates a worktree and runs it in Docker.
-
-  yolo      `sux -w -y "prompt" <name>` creates a worktree, starts a
-            Docker container, and runs claude --dangerously-skip-permissions.
-            Requires -w for safety.
-
-  kill      `sux -k <name>` kills the tmux session and removes the container.
-
-  list      `sux -l` lists all tmux sessions and running Docker containers.
-
-  config    `sux --config` writes a sane ~/.tmux.conf and rebuilds the
-            Docker base image.
-"""'''
+_docstring_text = (SRC_DIR / "resources" / "docstring.md").read_text().strip()
+DOCSTRING = f'"""\n{_docstring_text}\n"""'
 
 
 def _collect_imports(source, tree):
@@ -192,7 +166,7 @@ def main():
 
     output = "\n".join(parts)
 
-    build_dir = Path("build")
+    build_dir = BASE_DIR.parent / "build"
     build_dir.mkdir(exist_ok=True)
     out_path = build_dir / "sux"
     out_path.write_text(output)

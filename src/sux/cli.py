@@ -2,6 +2,7 @@ import argparse
 import sys
 
 from sux.config import apply_config
+from sux.constants import APT_PROFILES
 from sux.docker import list_sessions
 from sux.git import ensure_worktree
 from sux.session import attach_or_create, docker_session, kill_session
@@ -32,8 +33,11 @@ Modes:
 
   list      `sux -l` lists all tmux sessions and running Docker containers.
 
-  config    `sux --config` writes a sane ~/.tmux.conf and rebuilds the
-            Docker base image.
+  config    `sux --config` writes ~/.tmux.conf and rebuilds the Docker
+            base image with all profiles (gpu, go, llvm).
+            `sux --config=minimal` builds without profiles.
+            `sux --config=gpu` builds with only the gpu profile.
+            `sux --config --apt=vim` adds literal apt packages.
 """
 
 
@@ -46,8 +50,11 @@ def main():  # noqa: C901, PLR0912
     parser.add_argument("-l", "--list", action="store_true", help="List sessions")
     parser.add_argument(
         "--config",
-        action="store_true",
-        help="Write sane tmux config to ~/.tmux.conf",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="PROFILES",
+        help="Rebuild Docker image (profiles: minimal,gpu,go,llvm; default: all)",
     )
     parser.add_argument(
         "-k",
@@ -75,7 +82,7 @@ def main():  # noqa: C901, PLR0912
     )
     parser.add_argument(
         "--apt",
-        help="Apt packages/profiles for --config (gpu,go,llvm,or names)",
+        help="Extra apt package names for --config",
     )
     parser.add_argument("--config-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("name", nargs="?", help="Session name")
@@ -86,8 +93,13 @@ def main():  # noqa: C901, PLR0912
         config_test()
         return
 
-    if args.config:
-        apt_extras = args.apt.split(",") if args.apt else None
+    if args.config is not None:
+        if args.config == "all":
+            profiles = list(APT_PROFILES.keys())
+        else:
+            profiles = [p for p in args.config.split(",") if p in APT_PROFILES]
+        apt_packages = args.apt.split(",") if args.apt else []
+        apt_extras = profiles + apt_packages if (profiles or apt_packages) else None
         apply_config(apt_extras=apt_extras)
     elif args.list:
         list_sessions()
