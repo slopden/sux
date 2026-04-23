@@ -38,6 +38,9 @@ ENV PATH="$HOME/.cargo/bin:${PATH}"
 # uv (latest)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="$HOME/.local/bin:${PATH}"
+# Create the project venv outside the workspace bind mount; the host's .venv
+# (if any) is masked by tmpfs, and a mount point can't be rmdir'd on recreate.
+ENV UV_PROJECT_ENVIRONMENT=$HOME/.venv-sux
 # nvm + latest Node.js
 ENV NVM_DIR="$HOME/.nvm"
 RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash \
