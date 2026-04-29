@@ -41,7 +41,7 @@ Modes:
 """
 
 
-def main():  # noqa: C901, PLR0912
+def main():  # noqa: C901, PLR0912, PLR0915
     parser = argparse.ArgumentParser(
         description="A tmux wrapper with sandboxing and screen keybindings",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -96,11 +96,18 @@ def main():  # noqa: C901, PLR0912
     if args.config is not None:
         if args.config == "all":
             profiles = list(APT_PROFILES.keys())
+        elif args.config == "minimal":
+            profiles = []
         else:
-            profiles = [p for p in args.config.split(",") if p in APT_PROFILES]
+            profiles = [p.strip() for p in args.config.split(",") if p.strip()]
+            unknown = [p for p in profiles if p not in APT_PROFILES]
+            if unknown:
+                parser.error(
+                    f"unknown --config profile(s): {','.join(unknown)} "
+                    f"(known: {','.join(APT_PROFILES)}, or 'all'/'minimal')"
+                )
         apt_packages = args.apt.split(",") if args.apt else []
-        apt_extras = profiles + apt_packages if (profiles or apt_packages) else None
-        apply_config(apt_extras=apt_extras)
+        apply_config(apt_extras=profiles + apt_packages)
     elif args.list:
         list_sessions()
     elif args.kill:

@@ -5,7 +5,6 @@
 """Collapse src/sux/ into a single executable Python file."""
 
 import ast
-import os
 import sys
 from pathlib import Path
 
@@ -30,7 +29,7 @@ UV_SCRIPT_META = """\
 # requires-python = ">=3.10"
 # ///"""
 
-BASE_DIR = Path(os.path.abspath(os.path.dirname(__file__)))
+BASE_DIR = Path(__file__).resolve().parent
 SRC_DIR = BASE_DIR / "sux"
 
 _docstring_text = (SRC_DIR / "resources" / "docstring.md").read_text().strip()

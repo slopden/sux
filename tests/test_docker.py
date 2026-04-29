@@ -26,11 +26,21 @@ class TestResolveAptExtras:
 
 
 class TestPrepareDockerfile:
-    def test_no_extras(self):
+    def test_default_is_kitchen_sink(self):
         df = prepare_dockerfile()
         assert "# APT_EXTRA" not in df
         assert "# GPU_BLOCK_START" not in df
-        assert "GPU_BLOCK_END" not in df
+        assert "# GPU_BLOCK_END" not in df
+        assert "nsight" in df
+        assert "NVIDIA_DRIVER_CAPABILITIES" in df
+        assert "golang" in df
+        assert "clang" in df
+
+    def test_minimal_is_explicit_empty_list(self):
+        df = prepare_dockerfile(apt_extras=[])
+        assert "# APT_EXTRA" not in df
+        assert "# GPU_BLOCK_START" not in df
+        assert "# GPU_BLOCK_END" not in df
         assert "nsight" not in df
         assert "NVIDIA_DRIVER" not in df
 

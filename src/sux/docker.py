@@ -18,10 +18,16 @@ def resolve_apt_extras(items):
 
 
 def prepare_dockerfile(apt_extras=None):
-    """Apply apt extras and GPU gating to the Dockerfile template."""
+    """Apply apt extras and GPU gating to the Dockerfile template.
+
+    `apt_extras=None` defaults to all profiles (the kitchen sink). Pass an
+    empty list to opt into a minimal image with no extras and no GPU.
+    """
     dockerfile = SUX_DOCKERFILE
+    if apt_extras is None:
+        apt_extras = list(APT_PROFILES.keys())
     extras = resolve_apt_extras(apt_extras) if apt_extras else []
-    has_gpu = apt_extras and "gpu" in apt_extras
+    has_gpu = "gpu" in apt_extras
 
     # GPU block: keep or remove
     if has_gpu:
@@ -57,8 +63,27 @@ def prepare_dockerfile(apt_extras=None):
     return dockerfile
 
 
-def build_docker_image(apt_extras=None):
-    """Build the sux-base Docker image."""
+def ensure_docker_image(apt_extras=None, force=False):
+    """Build the sux-base Docker image.
+
+    With `force=False` (default), skip the build if the image already exists.
+    With `force=True`, remove and rebuild. `apt_extras=None` builds with all
+    profiles (the kitchen sink).
+    """
+    if not force:
+        result = subprocess.run(
+            ["docker", "image", "inspect", "sux-base"],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+    else:
+        subprocess.run(
+            ["docker", "rmi", "-f", "sux-base"], capture_output=True, check=False
+        )
+
+    print("Building sux-base Docker image...")
     dockerfile = prepare_dockerfile(apt_extras)
     subprocess.run(
         [
@@ -77,20 +102,6 @@ def build_docker_image(apt_extras=None):
         input=dockerfile.encode(),
         check=True,
     )
-
-
-def ensure_docker_image():
-    """Build the sux-base Docker image if it doesn't exist."""
-    result = subprocess.run(
-        ["docker", "image", "inspect", "sux-base"],
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        return
-
-    print("Building sux-base Docker image...")
-    build_docker_image()
     print("Built sux-base image")
 
 

@@ -3,7 +3,7 @@ import sys
 import time
 from pathlib import Path
 
-from sux.docker import build_docker_image
+from sux.docker import ensure_docker_image
 from sux.proxy import start_proxy, stop_proxy
 from sux.utils import host_username
 
@@ -40,13 +40,7 @@ def config_test():
 
     try:
         # Rebuild image
-        print("Rebuilding sux-base image...")
-        subprocess.run(
-            ["docker", "rmi", "-f", "sux-base"],
-            capture_output=True,
-            check=False,
-        )
-        build_docker_image()
+        ensure_docker_image(force=True)
 
         # Start proxy and container
         print("Starting test container...")
