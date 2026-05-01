@@ -10,25 +10,6 @@ from sux.tmux import run_tmux, tmux_running
 from sux.utils import host_username
 
 
-def _mask_mounts(host_dir, container_ws):
-    """Build --tmpfs args to hide host caches/secrets from the container."""
-    mounts = []
-    if (Path(host_dir) / "secrets").is_dir():
-        mounts += ["--tmpfs", f"{container_ws}/secrets"]
-    for child in Path(host_dir).iterdir():
-        if (
-            child.is_dir()
-            and child.name.startswith(".")
-            and child.name not in (".git", ".github", ".claude")
-        ):
-            mount = f"{container_ws}/{child.name}"
-            # .venv needs exec (python binaries) and extra size for deps
-            if child.name == ".venv":
-                mount += ":exec,size=2g"
-            mounts += ["--tmpfs", mount]
-    return mounts
-
-
 def docker_session(name, yolo=None):
     """Mount current directory into Docker container and open session."""
     container_name = f"sux-{name}"
@@ -52,8 +33,6 @@ def docker_session(name, yolo=None):
 
         git = GitState(host_dir)
         container_ws = git.container_ws
-
-        secrets_mounts = _mask_mounts(host_dir, container_ws)
 
         # Pass through auth environment variables
         env_args = []
@@ -84,7 +63,6 @@ def docker_session(name, yolo=None):
                 "-w",
                 container_ws,
                 *env_args,
-                *secrets_mounts,
                 "sux-base",
                 *git.container_cmd,
             ],
