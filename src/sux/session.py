@@ -6,11 +6,22 @@ from pathlib import Path
 from sux.docker import ensure_docker_image
 from sux.git import GitState
 from sux.proxy import ensure_proxy, start_proxy, stop_proxy
-from sux.tmux import run_tmux, tmux_running
+from sux.tmux import run_tmux, send_commands, tmux_running, wait_for_prompt
 from sux.utils import host_username
 
 
-def docker_session(name, yolo=None):
+def _start_with_commands(name, commands, *exec_cmd):
+    """Create a detached tmux session, send commands, then attach."""
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", name, *exec_cmd],
+        check=True,
+    )
+    wait_for_prompt(name)
+    send_commands(name, commands)
+    run_tmux("attach-session", "-t", name)
+
+
+def docker_session(name, commands=None):
     """Mount current directory into Docker container and open session."""
     container_name = f"sux-{name}"
     host_dir = str(Path.cwd().resolve())
@@ -77,6 +88,8 @@ def docker_session(name, yolo=None):
             check=False,
         )
 
+    exec_cmd = ["docker", "exec", "-it", "-u", user, container_name, "bash", "-l"]
+
     # Attach to or create tmux session running docker exec
     if tmux_running():
         result = subprocess.run(
@@ -85,41 +98,18 @@ def docker_session(name, yolo=None):
             check=False,
         )
         if result.returncode == 0:
+            if commands:
+                send_commands(name, commands)
             run_tmux("attach-session", "-t", name)
             return
 
-    if yolo:
-        run_tmux(
-            "new-session",
-            "-s",
-            name,
-            "docker",
-            "exec",
-            "-it",
-            "-u",
-            user,
-            container_name,
-            "bash",
-            "-lc",
-            f'yolo "{yolo}"',
-        )
+    if commands:
+        _start_with_commands(name, commands, *exec_cmd)
     else:
-        run_tmux(
-            "new-session",
-            "-s",
-            name,
-            "docker",
-            "exec",
-            "-it",
-            "-u",
-            user,
-            container_name,
-            "bash",
-            "-l",
-        )
+        run_tmux("new-session", "-s", name, *exec_cmd)
 
 
-def attach_or_create(name=None):
+def attach_or_create(name=None, commands=None):
     """Attach to session, creating if needed."""
     if name:
         # Check for existing tmux session first
@@ -130,6 +120,8 @@ def attach_or_create(name=None):
                 check=False,
             )
             if result.returncode == 0:
+                if commands:
+                    send_commands(name, commands)
                 run_tmux("attach-session", "-t", name)
                 return
 
@@ -148,10 +140,7 @@ def attach_or_create(name=None):
                 capture_output=True,
                 check=False,
             )
-            run_tmux(
-                "new-session",
-                "-s",
-                name,
+            exec_cmd = [
                 "docker",
                 "exec",
                 "-it",
@@ -160,11 +149,18 @@ def attach_or_create(name=None):
                 container_name,
                 "bash",
                 "-l",
-            )
+            ]
+            if commands:
+                _start_with_commands(name, commands, *exec_cmd)
+            else:
+                run_tmux("new-session", "-s", name, *exec_cmd)
             return
 
         # Fall through to new plain tmux session
-        run_tmux("new-session", "-s", name)
+        if commands:
+            _start_with_commands(name, commands)
+        else:
+            run_tmux("new-session", "-s", name)
     # Attach to most recent, or create new
     elif tmux_running():
         run_tmux("attach-session")

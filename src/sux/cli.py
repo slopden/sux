@@ -25,9 +25,10 @@ Modes:
 
   combined  `sux -w -d <name>` creates a worktree and runs it in Docker.
 
-  yolo      `sux -w -y "prompt" <name>` creates a worktree, starts a
-            Docker container, and runs claude --dangerously-skip-permissions.
-            Requires -w for safety.
+  yolo      `sux -y "cmd1; cmd2; ..." <name>` opens the session and types
+            each `;`-delimited command into the pane via tmux send-keys,
+            waiting for each to finish (sentinel-based) before sending the
+            next. Combines with -d and/or -w.
 
   kill      `sux -k <name>` kills the tmux session and removes the container.
 
@@ -77,8 +78,8 @@ def main():  # noqa: C901, PLR0912, PLR0915
     parser.add_argument(
         "-y",
         "--yolo",
-        metavar="PROMPT",
-        help="Run claude --dangerously-skip-permissions with PROMPT (requires -w)",
+        metavar="CMDS",
+        help="Type ;-delimited commands into the session via tmux send-keys",
     )
     parser.add_argument(
         "--apt",
@@ -116,24 +117,27 @@ def main():  # noqa: C901, PLR0912, PLR0915
         kill_session(args.name)
     else:
         name = args.name
-        if args.yolo and not args.worktree:
-            parser.error("-y/--yolo requires -w/--worktree")
+        commands = None
         if args.yolo:
-            args.docker = True
+            commands = [c.strip() for c in args.yolo.split(";") if c.strip()]
+            if not commands:
+                parser.error("-y/--yolo: no commands parsed from input")
+            if not name:
+                parser.error("-y/--yolo requires a session name")
         if not name:
             if args.docker or args.worktree:
-                parser.error("-d/-w/-y require a session name")
+                parser.error("-d/-w require a session name")
             attach_or_create()
         elif args.worktree:
             ensure_worktree(name)
             if args.docker:
-                docker_session(name, yolo=args.yolo)
+                docker_session(name, commands=commands)
             else:
-                attach_or_create(name)
+                attach_or_create(name, commands=commands)
         elif args.docker:
-            docker_session(name)
+            docker_session(name, commands=commands)
         else:
-            attach_or_create(name)
+            attach_or_create(name, commands=commands)
 
 
 if __name__ == "__main__":

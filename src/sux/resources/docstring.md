@@ -14,9 +14,10 @@ Modes:
 
   combined  `sux -w -d <name>` creates a worktree and runs it in Docker.
 
-  yolo      `sux -w -y "prompt" <name>` creates a worktree, starts a
-            Docker container, and runs claude --dangerously-skip-permissions.
-            Requires -w for safety.
+  yolo      `sux -y "cmd1; cmd2; ..." <name>` opens the session and types
+            each `;`-delimited command into the pane via tmux send-keys,
+            waiting for each to finish (sentinel-based) before sending the
+            next. Combines with -d and/or -w.
 
   kill      `sux -k <name>` kills the tmux session and removes the container.
 
