@@ -20,6 +20,8 @@ MODULE_ORDER = [
     "config",
     "testing",
     "install/log",
+    "install/render",
+    "install/prompt",
     "install/shell",
     "install/model",
     "install/resources",
@@ -89,7 +91,7 @@ def extract_module(filepath):
     if (
         first_node
         and isinstance(first_node, ast.Expr)
-        and isinstance(first_node.value, (ast.Constant, ast.Str))
+        and isinstance(first_node.value, ast.Constant)
     ):
         docstring_end = first_node.end_lineno
 

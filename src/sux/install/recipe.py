@@ -9,6 +9,7 @@ from pathlib import Path
 
 from sux.install.log import Fail, say
 from sux.install.model import KINDS, Action, Probe
+from sux.install.render import Ask, Check, Note
 from sux.install.resources import (
     SECRET_MARK,
     DaemonReloadRes,
@@ -114,6 +115,9 @@ class Recipe:
             "Probe": Probe,
             "Fail": Fail,
             "say": say,
+            "Ask": Ask,
+            "Check": Check,
+            "Note": Note,
             "read_file": read_file,
         }
         exec(compile(source, f"{self.name}/hooks.py", "exec"), scope)

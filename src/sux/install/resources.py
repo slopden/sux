@@ -31,6 +31,7 @@ APT_MAX_AGE = 24 * 3600
 # Blocks service starts while packages install, so a stock config never runs.
 POLICY_RC = Path("/usr/sbin/policy-rc.d")
 POLICY_RC_TEXT = "#!/bin/sh\nexit 101\n"
+MANAGED_BY = "# Managed by "  # start of the header line of a file we write
 SECRET_MARK = "\0secret\0"  # where `$secret` lands in a secret step's content
 MARKER = ".sux-sha256"  # records which archive an extracted tree came from
 HTTP_OK = 200
@@ -78,6 +79,16 @@ def describe(content):
         return "empty"
     digest = hashlib.sha256(content.encode()).hexdigest()[:12]
     return f"{len(content.splitlines())} lines, sha256 {digest}"
+
+
+def body(text):
+    """`text` without its "# Managed by ..." comment lines.
+
+    Who wrote a file is not a reason to write it again: the header of an
+    older installer counts as ours.
+    """
+    lines = text.splitlines(keepends=True)
+    return "".join(ln for ln in lines if not ln.startswith(MANAGED_BY))
 
 
 def read_file(ctx, path, secret=False):
@@ -227,6 +238,7 @@ class FileRes(PathRes):
         super().__init__(step, present)
         self.content = step["content"]
         self._have = None
+        self._same = False  # as `content`, but for the "# Managed by" lines
         self._meta_ok = True
 
     def probe(self, ctx):
@@ -240,7 +252,8 @@ class FileRes(PathRes):
             have = f"{meta}; content {UNKNOWN}"
             return Probe(None if self._meta_ok else False, have)
         problems = [] if self._meta_ok else ["owner/mode"]
-        problems += [] if self._have == self.content else ["content"]
+        self._same = body(self._have) == body(self.content)
+        problems += [] if self._same else ["content"]
         reason = " + ".join(problems) + " differ" if problems else ""
         return Probe(not problems, f"{meta}, {describe(self._have)}", reason)
 
@@ -250,7 +263,7 @@ class FileRes(PathRes):
         if not self._exists:
             diff = unified(self.path, "", self.content)
             return [self.write(self.content, detail=diff)]
-        if self._have is not None and self._have != self.content:
+        if self._have is not None and not self._same:
             diff = unified(self.path, self._have, self.content)
             return [*backup(ctx, self.path), self.write(self.content, detail=diff)]
         return self.fix_meta()
@@ -285,7 +298,7 @@ class SecretRes(PathRes):
 
     def _find(self, text):
         """(secret already in the file or None, whether the whole file matches)."""
-        whole = re.fullmatch(self._pattern(self.content), text)
+        whole = re.fullmatch(self._pattern(body(self.content)), body(text))
         if whole:
             return whole[1], True
         line = next(ln for ln in self.content.splitlines() if SECRET_MARK in ln)

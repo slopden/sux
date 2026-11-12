@@ -4,7 +4,8 @@ Values the recipe cannot write as data (which GPUs can be passed on, CPU
 pinning, defaults that depend on the host), the steps that take time and can
 fail half way (installing Windows, the GPU handoff rehearsal, the first boot
 with a GPU), and the health checks that talk to the guest. The engine provides
-Action, Probe, Fail, say and read_file as globals.
+Action, Probe, Fail, say, read_file and what say() takes (Note, Check, Ask)
+as globals.
 
 A check that would stop a later stage does not stop the whole plan: it is
 planned as a BLOCKED action, which fails when (and only when) its stage is
@@ -255,7 +256,7 @@ def _strip_gpu(ctx, name):
     for mark in root.iterfind(f"metadata/{{{SUX_NS}}}recipe"):
         mark.set("sha256", "")
     if passed:
-        say(f"  defining {name} without its GPU, so that it stays usable")
+        say(Note(f"defining {name} without its GPU, so that it stays usable", 2))
         xml = ET.tostring(root, encoding="unicode")
         ctx.sh.run([*VIRSH, "define", "/dev/stdin"], stdin=xml, check=False)
     return bool(passed)
@@ -444,10 +445,8 @@ def windows_install(ctx, step, present):
             for _ in range(10):  # the prompt is there for a few seconds
                 _sleep(1)
                 ctx.sh.run([*VIRSH, "send-key", name, "KEY_ENTER"], check=False)
-        say(
-            f"  Windows Setup runs in {name} (watch it: virt-manager); up to "
-            f"{minutes} minutes"
-        )
+        watch = f"Windows Setup runs in {name} (watch it: virt-manager)"
+        say(Note(f"{watch}; up to {minutes} minutes", 2))
 
         def answered():
             if _state(ctx, name) != "running":
@@ -455,7 +454,7 @@ def windows_install(ctx, step, present):
             return _agent(ctx, name, "guest-ping") is not None
 
         took = _wait(ctx, f"Windows Setup in {name}", answered, minutes * 60)
-        say(f"  the guest agent answers after {took // 60} minutes")
+        say(Note(f"the guest agent answers after {took // 60} minutes", 2))
         ctx.sh.run(["touch", str(marker)])
 
     detail = [
@@ -579,7 +578,7 @@ def gpu_guest_check(ctx, step, present):
                 lambda: _agent(ctx, name, "guest-ping") is not None,
                 AGENT_S,
             )
-            say(f"  ok  {_guest_gpu(ctx, name, kind)}")
+            say(Check("ok", _guest_gpu(ctx, name, kind)))
             ctx.sh.run(["touch", str(marker)])
         except Fail as e:
             ctx.sh.run([*VIRSH, "destroy", name], check=False)

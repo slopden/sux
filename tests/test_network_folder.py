@@ -567,7 +567,7 @@ class TestPreflight:
         for name in ("good-bucket", "Bad_Name", ".hidden"):
             (tmp_path / name).mkdir()
         hooks["preflight"](hctx, step, True)
-        assert "will be hidden: ['Bad_Name']" in capsys.readouterr().out
+        assert "warning  not valid S3 bucket names, will be hidden: Bad_Name" in capsys.readouterr().out
 
 
 class TestSmbPassword:
@@ -671,7 +671,7 @@ class TestSmbChecks:
         ]
         assert sh.envs == [{"PASSWD": "pass word"}] * 3  # never in the argv
         assert "pass word" not in " ".join(sh.commands())
-        assert "ok  alice can log in and list" in capsys.readouterr().out
+        assert "ok       alice can log in and list" in capsys.readouterr().out
 
     def test_a_served_escape_fails(self, hooks, hctx, share, sh):
         hooks["smb_login"].__globals__["_asked"]["alice"] = "pw"
@@ -684,6 +684,45 @@ class TestSmbChecks:
         sh.replies["smbclient"] = (1, "session setup failed: NT_STATUS_LOGON_FAILURE")
         with pytest.raises(Fail, match="login/listing failed: session setup failed"):
             hooks["smb_login"](hctx, self.entry(share))
+
+    def at_terminal(self, hooks, monkeypatch, *passwords):
+        """A terminal whose user types `passwords`; returns the prompts shown."""
+        module = hooks["smb_login"].__globals__
+        typed, prompts = iter(passwords), []
+        monkeypatch.setattr(module["sys"].stdin, "isatty", lambda: True)
+        monkeypatch.setattr(
+            module["getpass"], "getpass", lambda p: prompts.append(p) or next(typed)
+        )
+        return prompts
+
+    def test_a_refused_password_is_asked_again(  # noqa: PLR0913
+        self, hooks, hctx, share, sh, monkeypatch, capsys
+    ):
+        prompts = self.at_terminal(hooks, monkeypatch, "typo", "right")
+        (share / "docs" / "leak").unlink()
+        sh.replies["smbclient"] = lambda _cmd, _stdin: (
+            (0, "") if sh.envs[-1] == {"PASSWD": "right"} else (1, "NT_STATUS_LOGON_FAILURE")
+        )
+        assert "containment not tested" in hooks["smb_login"](hctx, self.entry(share))
+        assert len(prompts) == 2
+        assert "set with smbpasswd (not the login or sudo password)" in prompts[0]
+        assert "not accepted for alice; 2 more attempt(s)" in capsys.readouterr().out
+        assert hooks["smb_login"].__globals__["_asked"]["alice"] == "right"
+
+    def test_three_refused_passwords_fail(self, hooks, hctx, share, sh, monkeypatch):
+        prompts = self.at_terminal(hooks, monkeypatch, "a", "b", "c")
+        sh.replies["smbclient"] = (1, "session setup failed: NT_STATUS_LOGON_FAILURE")
+        with pytest.raises(Fail, match="login/listing failed"):
+            hooks["smb_login"](hctx, self.entry(share))
+        assert len(prompts) == 3
+        assert "alice" not in hooks["smb_login"].__globals__["_asked"]
+
+    def test_other_failures_are_not_retried(self, hooks, hctx, share, sh, monkeypatch):
+        prompts = self.at_terminal(hooks, monkeypatch, "pw")
+        sh.replies["smbclient"] = (1, "NT_STATUS_CONNECTION_REFUSED")
+        with pytest.raises(Fail, match="CONNECTION_REFUSED"):
+            hooks["smb_login"](hctx, self.entry(share))
+        assert len(prompts) == 1
 
     def test_no_escaping_symlink_nothing_to_test(self, hooks, hctx, share, sh):
         hooks["smb_login"].__globals__["_asked"]["alice"] = "pw"
@@ -967,5 +1006,5 @@ class TestSingleFile:
         asked = run("network-folder")  # no terminal: the questions, and no change
         assert asked.returncode == 1, asked.stderr
         assert "network-folder has questions that are not answered yet:" in asked.stdout
-        assert "share           Share name" in asked.stdout
+        assert "share      Share name" in asked.stdout
         assert not (sandbox / "config" / "sux").exists()

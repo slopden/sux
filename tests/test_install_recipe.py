@@ -412,7 +412,7 @@ class TestVerify:
             run_verify([entry], self.ctx(sh))
         sh.unit("b.socket")
         run_verify([entry], self.ctx(sh))
-        assert "ok  active: a.service, b.socket" in capsys.readouterr().out
+        assert "ok       active: a.service, b.socket" in capsys.readouterr().out
 
     def test_listeners(self, sh):
         sh.replies["ss -ltnH"] = (
@@ -437,7 +437,7 @@ class TestVerify:
     def test_listeners_can_demand_a_closed_port(self, sh, capsys):
         sh.replies["ss -ltnH"] = (0, "LISTEN 0 50 127.0.0.1:445 0.0.0.0:*\n")
         run_verify([{"kind": "listeners", "port": 139, "addresses": []}], self.ctx(sh))
-        assert "ok  nothing listens on port 139" in capsys.readouterr().out
+        assert "ok       nothing listens on port 139" in capsys.readouterr().out
         with pytest.raises(Fail, match=r"port 445 listens on .*, expected \[\]"):
             run_verify([{"kind": "listeners", "port": 445, "addresses": []}], self.ctx(sh))
 
@@ -488,6 +488,26 @@ class TestVerify:
             run_verify([entry | {"function": "sick"}], self.ctx(sh, sick=sick))
         with pytest.raises(Fail, match="no function 'healthy'"):
             run_verify([entry], self.ctx(sh))
+
+    def test_every_check_runs_and_the_failures_are_named_once(self, sh, capsys):
+        def sick(ctx, entry):
+            raise Fail(f"{entry['what']} is down")
+
+        sh.unit("a.service")
+        entries = [
+            {"kind": "python", "function": "sick", "what": "smb"},
+            {"kind": "unit_active", "name": "a.service"},
+            {"kind": "python", "function": "sick", "what": "s3"},
+        ]
+        with pytest.raises(Fail) as failure:
+            run_verify(entries, self.ctx(sh, sick=sick))
+        assert str(failure.value) == "2 of 3 checks failed: smb is down; s3 is down"
+        lines = capsys.readouterr().out.splitlines()
+        assert lines == [
+            "  FAILED   smb is down",
+            "  ok       active: a.service",
+            "  FAILED   s3 is down",
+        ]
 
     def test_unknown_kind_and_missing_key(self, sh):
         with pytest.raises(Fail, match="unknown kind 'vibes'"):

@@ -132,6 +132,31 @@ class TestFile:
         assert "-old" in actions[2].detail
         assert "+a" in actions[2].detail
 
+    def test_only_the_managed_by_header_differs_is_ok(self, tmp_path, me, ctx, sh):
+        new = "# Managed by sux install demo -- not this file.\na\nb\n"
+        res = FileRes(self.step(tmp_path, me, content=new))
+        res.path.parent.mkdir()
+        res.path.write_text("# Managed by install_old.py -- edit Settings there.\na\nb\n")
+        res.path.chmod(0o644)
+        p, actions = plan(res, ctx)
+        assert (p.ok, p.reason, actions) == (True, "", [])
+        res.path.write_text("a\nb\n")  # no header at all
+        assert plan(res, ctx)[1] == []
+
+    def test_a_real_difference_writes_the_new_header(self, tmp_path, me, ctx, sh):
+        new = "# Managed by sux install demo -- not this file.\na\nb\n"
+        res = FileRes(self.step(tmp_path, me, content=new))
+        res.path.parent.mkdir()
+        res.path.write_text("# Managed by install_old.py -- edit Settings there.\na\nB\n")
+        res.path.chmod(0o644)
+        p, actions = plan(res, ctx)
+        assert p.reason == "content differ"
+        assert actions[-1].stdin == new
+        apply(actions, sh)
+        assert res.path.read_text() == new
+        res.path.write_text("# Some other comment\na\nb\n")  # not a header of ours
+        assert res.probe(ctx).ok is False
+
     def test_backup_dir_is_created_once_per_run(self, tmp_path, me, ctx, sh):
         first = FileRes(self.step(tmp_path, me))
         second = FileRes(self.step(tmp_path, me, path=str(tmp_path / "etc" / "two")))
@@ -275,6 +300,21 @@ class TestSecret:
         assert "keeps the existing secret" in actions[-1].desc
         assert actions[-1].stdin == "KEY_ID=shared\nKEY_SECRET=keepme-keepme\n"
         assert "cp -a --parents" in shown(actions, sh)[-2]
+
+    def test_only_the_managed_by_header_differs_is_ok(self, tmp_path, me, ctx, sh):
+        step = self.step(tmp_path, me)
+        res = SecretRes(step | {"content": "# Managed by sux.\n" + step["content"]})
+        old = "# Managed by install_old.py -- credentials.\n"
+        res.path.write_text(old + "KEY_ID=shared\nKEY_SECRET=keepme-keepme\n")
+        res.path.chmod(0o600)
+        p, actions = plan(res, ctx)
+        assert (p.ok, actions) == (True, [])
+        res.path.write_text(old + "KEY_ID=other\nKEY_SECRET=keepme-keepme\n")
+        res.path.chmod(0o600)
+        p, actions = plan(res, ctx)
+        assert p.ok is False
+        want = "# Managed by sux.\nKEY_ID=shared\nKEY_SECRET=keepme-keepme\n"
+        assert actions[-1].stdin == want
 
     def test_secret_is_scrubbed_from_the_log(self, tmp_path, me, ctx, sh):
         res = SecretRes(self.step(tmp_path, me))
@@ -822,6 +862,6 @@ class TestEngine:
     def test_check_converged_fails_on_anything_not_ok(self, ctx, sh, capsys):
         with pytest.raises(Fail, match="not converged: unit:a.service"):
             check_converged([UnitRes({"name": "a.service"})], ctx)
-        assert "NOT CONVERGED" in capsys.readouterr().out
+        assert "FAILED   not converged" in capsys.readouterr().out
         sh.unit("a.service")
         check_converged([UnitRes({"name": "a.service"})], ctx)

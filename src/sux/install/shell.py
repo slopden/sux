@@ -4,6 +4,7 @@ import subprocess
 import time
 
 from sux.install.log import Fail, RunLog, say
+from sux.install.render import Command
 
 
 class Shell:
@@ -52,14 +53,14 @@ class Shell:
     ):
         """Run a changing command: echoed, executed, output logged."""
         argv = self.argv(cmd, sudo)
-        say(f"  $ {shlex.join(argv)}")
+        say(Command(shlex.join(argv)))
         t0 = time.monotonic()
         r = self.spawn(argv, stdin=stdin, interactive=interactive)
         fields = {"stdout": "<interactive, not captured>"}
         if not interactive:
             if r.returncode != 0:
                 for line in (r.stdout + r.stderr).splitlines():
-                    say(f"      | {line}")
+                    say(Command(line, output=True))
             shown = f"<redacted {len(stdin or '')} chars>" if secret_stdin else stdin
             fields = {
                 "stdin": self.log.clip(shown),

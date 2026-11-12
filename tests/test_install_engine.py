@@ -274,7 +274,7 @@ class TestSingleFileBuild:
     def test_built_file_lists_the_inlined_recipe(self, built, sandbox):
         r = self.run(built, sandbox, "install")
         assert r.returncode == 0, r.stderr
-        assert "demo                not set up" in r.stdout
+        assert "demo              not set up" in r.stdout
 
     def test_built_file_without_a_terminal_only_lists_questions(self, built, sandbox):
         r = self.run(built, sandbox, "install", "demo")

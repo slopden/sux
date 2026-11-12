@@ -119,13 +119,25 @@ class TestChoose:
     def test_options_depend_on_state(self):
         typed = scripted("a")
         assert choose(True, True, typed) == "apply"
-        assert typed.prompts == ["\n[a]pply / [r]eprobe with sudo / [e]xit: "]
+        assert typed.prompts == ["apply / reprobe / exit: "]
         typed = scripted("r")
         assert choose(False, True, typed) == "reprobe"
-        assert typed.prompts == ["\n[r]eprobe with sudo / [e]xit: "]
+        assert typed.prompts == ["reprobe / exit: "]
         typed = scripted("e")
         assert choose(True, False, typed) == "exit"
-        assert typed.prompts == ["\n[a]pply / [e]xit: "]
+        assert typed.prompts == ["apply / exit: "]
+
+    def test_reprobe_says_how_many_items_it_checks(self, capsys):
+        choose(False, 2, scripted("e"))
+        out = capsys.readouterr().out
+        assert "reprobe   check the 2 unknown item(s) with sudo" in out
+
+    def test_the_exit_option_is_always_there(self, capsys):
+        choose(True, 0, scripted("e"))
+        out = capsys.readouterr().out
+        assert "  apply     run the plan above" in out
+        assert "  exit      leave without changing anything" in out
+        assert "reprobe" not in out
 
     def test_only_offered_options_are_accepted(self):
         assert choose(True, False, scripted("r", "reprobe", "", "yes", "apply")) == (
@@ -162,6 +174,92 @@ class Gated(Resource):
         return [Action("fix the thing", fn=fix)]
 
 
+class Counted(Resource):
+    """Needs one change, with a diff; counts how often it is probed."""
+
+    kind = "counted"
+
+    def __init__(self):
+        super().__init__({})
+        self.target = "known"
+        self.probes, self.done = 0, False
+
+    def probe(self, ctx):  # noqa: ARG002
+        self.probes += 1
+        return Probe(self.done, "old")
+
+    def plan(self, ctx, p):  # noqa: ARG002
+        def write():
+            self.done = True
+
+        return [Action("write known", fn=write, detail=["-old", "+new"])]
+
+
+class Follower(Counted):
+    """Restarts when the gated thing changes in this run."""
+
+    kind = "follower"
+
+    def probe(self, ctx):
+        self.probes += 1
+        return Probe("gated:thing" not in ctx.changing, "running")
+
+    def plan(self, ctx, p):  # noqa: ARG002
+        return [Action("restart follower", fn=lambda: None)]
+
+
+class TestReprobe:
+    """`reprobe` checks what was unknown, and prints only what that settled."""
+
+    def run(self, tmp_path, gated, *lines):
+        sh = FakeShell(RunLog(tmp_path / "log.jsonl"))
+        self.known, self.follower = Counted(), Follower()
+        res = [self.known, gated, self.follower]
+        settle(res, sh, lambda: Ctx(sh, "demo"), scripted(*lines))
+        sh.log.close()
+        text = (tmp_path / "log.jsonl").read_text()
+        return [json.loads(line) for line in text.splitlines()]
+
+    def test_resolved_ok_prints_one_line_and_plan_unchanged(self, tmp_path, capsys):
+        events = self.run(tmp_path, Gated(True), "r", "e")
+        assert (self.known.probes, self.follower.probes) == (1, 2)
+        after = capsys.readouterr().out.split("Checked with sudo\n")[1]
+        lines = after.split("\n\n")[0].splitlines()  # up to the prompt
+        assert len(lines) == 2
+        assert lines[0].split() == ["ok", "gated", "thing", "fine"]
+        assert lines[1] == "Plan unchanged (1 commands)"
+        assert "+new" not in after  # the diff that was shown is not shown again
+        # the log has the whole plan once more
+        logged = [e["cmd"] for e in events if e["event"] == "plan_action"]
+        assert logged == ["write known", "write known"]
+        assert [e["diff"] for e in events if e["event"] == "plan_action"][-1]
+
+    def test_resolved_change_prints_the_delta(self, tmp_path, capsys):
+        events = self.run(tmp_path, Gated(False), "r", "e")
+        assert (self.known.probes, self.follower.probes) == (1, 2)
+        after = capsys.readouterr().out.split("Checked with sudo\n")[1]
+        lines = after.split("\n\n")[0].splitlines()
+        assert [line.split()[:2] for line in lines[:2]] == [
+            ["change", "gated"],
+            ["change", "follower"],
+        ]
+        assert lines[2:] == [
+            "Plan changed (3 commands); + added, - removed",
+            "   +  fix the thing",
+            "   +  restart follower",
+        ]
+        assert "write known" not in after
+        logged = [e["cmd"] for e in events if e["event"] == "plan_action"]
+        assert logged[1:] == ["write known", "fix the thing", "restart follower"]
+
+    def test_apply_with_unknowns_checks_only_those(self, tmp_path, capsys):
+        self.run(tmp_path, Gated(True), "a")
+        out = capsys.readouterr().out
+        assert "Plan unchanged (1 commands)" in out
+        assert out.count("+new") == 1
+        assert self.known.probes == 2  # the check, and converged after applying
+
+
 class TestSettle:
     def run(self, sh, res, *lines):
         typed = scripted(*lines)
@@ -190,7 +288,7 @@ class TestSettle:
         done, prompts = self.run(sh, [res], "e")
         assert done is False
         assert res.good is False
-        assert prompts == ["\n[a]pply / [e]xit: "]  # no unknowns: no reprobe offered
+        assert prompts == ["apply / exit: "]  # no unknowns: no reprobe offered
         assert sh.spawned == []  # sudo is not touched before the choice
 
     def test_apply_then_converge(self, sh, capsys):
@@ -204,9 +302,10 @@ class TestSettle:
     def test_unknown_offers_only_reprobe_until_resolved(self, sh, capsys):
         done, prompts = self.run(sh, [Gated(True)], "r")
         assert done is True
-        assert prompts == ["\n[r]eprobe with sudo / [e]xit: "]
+        assert prompts == ["reprobe / exit: "]
         assert sh.spawned == [["sudo", "-v"]]
         out = capsys.readouterr().out
+        assert "so there is nothing to apply yet.\n\n  reprobe " in out
         assert "unknown until sudo" in out
         assert "1 item(s) cannot be checked without sudo" in out
 
@@ -216,8 +315,8 @@ class TestSettle:
         assert done is True
         assert res.good is True
         assert prompts == [
-            "\n[r]eprobe with sudo / [e]xit: ",
-            "\n[a]pply / [e]xit: ",  # resolved: reprobe is no longer offered
+            "reprobe / exit: ",
+            "apply / exit: ",  # resolved: reprobe is no longer offered
         ]
 
     def test_apply_with_unknowns_reprompts_if_the_plan_grew(self, sh, capsys):
@@ -226,8 +325,8 @@ class TestSettle:
         assert done is False
         assert (visible.good, hidden.good) == (False, False)  # nothing ran
         assert prompts == [
-            "\n[a]pply / [r]eprobe with sudo / [e]xit: ",
-            "\n[a]pply / [e]xit: ",
+            "apply / reprobe / exit: ",
+            "apply / exit: ",
         ]
         assert "The plan changed once sudo could check" in capsys.readouterr().out
 
@@ -301,7 +400,7 @@ class TestInstall:
         assert len(prompts) == 7  # six questions, then the one prompt
         assert prompts[0] == "Folder to serve: "
         assert prompts[2] == f"Run as user [{me['owner']}]: "
-        assert prompts[-1] == "\n[a]pply / [e]xit: "
+        assert prompts[-1] == "apply / exit: "
         assert load_answers("demo") == {
             "root": str(host.root),
             "unit_dir": str(host.unit_dir),
@@ -322,11 +421,11 @@ class TestInstall:
         )
 
         out = capsys.readouterr().out
-        assert "CHANGE" in out
+        assert "change" in out
         assert f"+root = {host.root}" in out  # the diff is part of the plan
         assert "re-probed: all 6 items match the desired state" in out
-        assert "ok  active: demo-web.service" in out
-        assert f"ok  {conf} names its root" in out
+        assert "ok       active: demo-web.service" in out
+        assert f"ok       {conf} names its root" in out
         assert out.index("Plan (") < out.index("Applying") < out.index("Health checks")
 
         events = host.last_run()
@@ -393,8 +492,8 @@ class TestInstall:
         assert not answers_path("demo").exists()
         out = capsys.readouterr().out
         assert "demo has questions that are not answered yet:" in out
-        assert "root            Folder to serve" in out
-        assert "features        Features" in out
+        assert "root      Folder to serve" in out
+        assert "features  Features" in out
         events = host.last_run()
         assert events[-2]["event"] == "unanswered"
         assert events[-1] == events[-1] | {"event": "end", "status": "incomplete"}
@@ -475,7 +574,7 @@ class TestInstall:
         code, _, _ = host.run(*host.first_answers, "a")
         assert code == 1
         out = capsys.readouterr().out
-        assert "ERROR: command failed (rc=1): sudo systemctl restart demo-web" in out
+        assert "FAILED  command failed (rc=1): sudo systemctl restart demo-web" in out
         assert "| Job failed" in out
         assert "log: " in out
         end = host.last_run()[-1]
@@ -490,7 +589,7 @@ class TestInstall:
         monkeypatch.setattr(flow, "build_resources", boom)
         code, _, _ = host.run(*host.first_answers)
         assert code == 1
-        assert "CRASHED: RuntimeError('boom')" in capsys.readouterr().out
+        assert "CRASHED  RuntimeError('boom')" in capsys.readouterr().out
         end = host.last_run()[-1]
         assert end["status"] == "crashed"
         assert "Traceback" in end["error"]
@@ -509,17 +608,17 @@ class TestInstall:
     def test_listing_shows_each_recipe_state(self, host, capsys, monkeypatch):
         monkeypatch.setattr(recipe_mod, "RECIPES_DIR", DEMO.parent)
         list_recipes(host.make_shell(RunLog()))
-        assert "demo                not set up" in capsys.readouterr().out
+        assert "demo              not set up" in capsys.readouterr().out
         host.run(*host.first_answers, "e")
         capsys.readouterr()
         list_recipes(host.make_shell(RunLog()))
-        assert "demo                6 to change" in capsys.readouterr().out
+        assert "demo              6 to change" in capsys.readouterr().out
         host.run("a")
         capsys.readouterr()
         sh = host.make_shell(RunLog())
         list_recipes(sh)
         out = capsys.readouterr().out
-        assert "demo                installed" in out
+        assert "demo              installed" in out
         assert "Example recipe for the tests" in out
         assert sh.changes() == []
 

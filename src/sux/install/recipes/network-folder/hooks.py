@@ -36,6 +36,7 @@ VIRTUAL_FS = {
     "debugfs", "tracefs", "fusectl", "binfmt_misc", "autofs", "ramfs", "nsfs",
     "rpc_pipefs",
 }  # fmt: skip
+SMB_LOGIN_TRIES = 3  # at a terminal, before a refused password fails the check
 _asked = {}  # what one run asked for or read: SMB passwords, S3 credentials
 
 
@@ -103,7 +104,8 @@ def _s3_port_free(ctx, step):
         if not name.startswith(".") and not re.fullmatch(BUCKET, name)
     )
     if hidden:
-        say(f"    warn: not valid S3 bucket names, will be hidden: {hidden}")
+        text = f"not valid S3 bucket names, will be hidden: {', '.join(hidden)}"
+        say(Check("warning", text))
     if step["health_check"] and ctx.sh.probe(["curl", "--version"]).returncode != 0:
         raise Fail("the S3 health check needs curl (apt install curl)")
     same = [f for f in ctx.values["folder"] if "s3" in f["protocols"]]
@@ -194,25 +196,49 @@ def smb_anonymous(ctx, entry):
     return "anonymous SMB access is refused"
 
 
-def smb_login(ctx, entry):
-    """The user can log in and list; a symlink leaving the share is not served."""
-    user, root = entry["user"], entry["root"]
-    unc = f"//{_tailnet_name(ctx, entry['listen'])}/{entry['share']}"
-    if user not in _asked:
-        if not sys.stdin.isatty():
-            return f"{unc}: login not tested (no terminal to ask the password)"
-        _asked[user] = getpass.getpass(f"  SMB password for {user} (to test login): ")
-        ctx.log.secret(_asked[user])
+def _smb_session(ctx, user, unc):
+    """Log in, asking for the password (again, if it is refused) at a terminal.
+
+    Returns smbclient(command) -> (rc, output), or None with nobody to ask.
+    """
+    tty = sys.stdin.isatty()
+    prompt = Ask(
+        f"Samba password of {user}, the one set with smbpasswd "
+        "(not the login or sudo password), to test the login"
+    ).styled
 
     def smbclient(command):
         argv = ["smbclient", unc, "-U", user, "-c", command]
         r = ctx.sh.probe(argv, env={"PASSWD": _asked[user]})
         return r.returncode, (r.stdout + r.stderr).strip()
 
-    rc, out = smbclient("ls")
-    if rc != 0:
-        raise Fail(f"login/listing failed: {out}")
-    say(f"  ok  {user} can log in and list {unc}")
+    for left in reversed(range(SMB_LOGIN_TRIES)):
+        if user not in _asked:
+            if not tty:
+                return None
+            _asked[user] = getpass.getpass(prompt)
+            ctx.log.secret(_asked[user])
+        rc, out = smbclient("ls")
+        if rc == 0:
+            break
+        if "NT_STATUS_LOGON_FAILURE" not in out:
+            raise Fail(f"login/listing failed: {out}")
+        del _asked[user]  # a wrong password is not tried again
+        if not (tty and left):
+            raise Fail(f"login/listing failed: {out}")
+        text = f"that password was not accepted for {user}; {left} more attempt(s)"
+        say(Note(text, 2, style="FAILED"))
+    return smbclient
+
+
+def smb_login(ctx, entry):
+    """The user can log in and list; a symlink leaving the share is not served."""
+    user, root = entry["user"], entry["root"]
+    unc = f"//{_tailnet_name(ctx, entry['listen'])}/{entry['share']}"
+    smbclient = _smb_session(ctx, user, unc)
+    if smbclient is None:
+        return f"{unc}: login not tested (no terminal to ask the password)"
+    say(Check("ok", f"{user} can log in and list {unc}"))
     escapes = (e for e in _escaping_symlinks(root) if not _unquotable(e[0]))
     link, target = next(escapes, (None, None))
     if link is None:

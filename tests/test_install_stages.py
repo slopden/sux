@@ -105,12 +105,12 @@ class TestStages:
         assert places == sorted(places)
         assert places[-1] < out.index("Applying")  # the whole plan, then the prompt
         # each stage is verified before the next one is applied
-        order = ["Applying: Stage 1/3", "ok  one is healthy", "Applying: Stage 2/3",
-                 "ok  two-abab is healthy", "Applying: Stage 3/3"]  # fmt: skip
+        order = ["Applying: Stage 1/3", "ok       one is healthy", "Applying: Stage 2/3",
+                 "ok       two-abab is healthy", "Applying: Stage 3/3"]  # fmt: skip
         places = [out.index(text) for text in order]
         assert places == sorted(places)
         # one prompt for the plan; `confirm` asks again before stage three
-        assert prompts[2:] == ["\n[a]pply / [e]xit: ", "\n[a]pply / [e]xit: "]
+        assert prompts[2:] == ["apply / exit: ", "apply / exit: "]
         units = [e for e in host.events() if e["event"] == "unit"]
         assert [u["ok"] for u in units] == [True] * 4
 
@@ -124,7 +124,7 @@ class TestStages:
         out = capsys.readouterr().out
         assert "Stopped at Stage 2/3  two: the second thing" in out
         assert "a re-run resumes here" in out
-        assert "ERROR: two-abab is broken" in out
+        assert "FAILED  1 of 1 checks failed: two-abab is broken" in out
         events = host.events()
         assert events[-1]["status"] == "failed"
         failed = [e for e in events if e["event"] == "unit" and not e["ok"]]
@@ -143,9 +143,9 @@ class TestStages:
         assert [c.rsplit("/", 1)[1] for c in sh.commands("touch")] == ["three"]
         assert len(prompts) == 1
         out = capsys.readouterr().out
-        assert "ok  base (needed by app): nothing to change" in out
-        assert "ok  one is healthy" in out  # earlier stages are checked on the way
-        assert "ok  two-abab is healthy" in out
+        assert "ok       base (needed by app): nothing to change" in out
+        assert "ok       one is healthy" in out  # earlier stages are checked on the way
+        assert "ok       two-abab is healthy" in out
         assert out.index("two-abab is healthy") < out.index("Applying: Stage 3/3")
 
     def test_declining_a_confirm_stops_before_that_stage(self, host, capsys):
@@ -207,7 +207,7 @@ class TestNeeds:
         code, sh, _ = host.run(str(host.root), "a", "a")
         assert code == 0
         out = capsys.readouterr().out
-        assert "  ok  base (needed by app): nothing to change\n" in out
+        assert "  ok       base (needed by app): nothing to change\n" in out
         assert "base marker" not in out  # no table, no plan
         assert "base is healthy" not in out  # and no health checks of its own
         assert not any("base" in c for c in sh.commands("touch"))
@@ -220,7 +220,7 @@ class TestNeeds:
         assert sh.commands("touch")[0].endswith("/base")
         out = capsys.readouterr().out
         assert out.index("base (needed by app)") < out.index("Stage 1/3")
-        assert out.index("ok  base is healthy") < out.index("Applying: Stage 1/3")
+        assert out.index("ok       base is healthy") < out.index("Applying: Stage 1/3")
         assert load_answers("base") == {"root": str(host.root)}
         assert sh.spawned.count(["sudo", "-v"]) == 1
 

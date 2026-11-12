@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sux.install.log import Fail, say
+from sux.install.render import Check, Note
 
 BACKUP_ROOT = Path("/var/backups/sux")
 UNKNOWN = "unknown until sudo"
@@ -34,7 +35,7 @@ class Action:
 
     def execute(self, sh):
         if self.fn is not None:
-            say(f"  {self.desc}")
+            say(Note(self.desc, 2))
             sh.log.event("cmd", kind="python", desc=self.desc)
             self.fn()
             return
@@ -69,8 +70,15 @@ class Ctx:
         self.cache_dir = cache_dir or Path.home() / ".cache" / "sux"
         stamp = stamp or datetime.now().astimezone().strftime("%Y%m%dT%H%M%S")
         self.backup_dir = BACKUP_ROOT / recipe / stamp
-        self.changing = set()  # keys of resources that change in this run
+        self._changing = set()
+        self.asked = False  # whether `changing` was read since this was cleared
         self._done = set()
+
+    @property
+    def changing(self):
+        """Keys of resources that change in this run."""
+        self.asked = True
+        return self._changing
 
     def once(self, name):
         """Return True the first time `name` is seen in this pass."""
@@ -122,17 +130,36 @@ class Planned:
     res: Resource
     probe: Probe
     actions: list
+    follows: bool = False  # it depends on what else changes in this run
+
+    @property
+    def settled(self):
+        """Whether a later pass, with sudo, would find the same."""
+        p = self.probe
+        return p.ok is not None and UNKNOWN not in p.have and not self.follows
 
 
-def probe_and_plan(resources, ctx):
+def probe_and_plan(resources, ctx, before=None):
+    """Probe and plan every resource; with `before`, only what is not settled.
+
+    `before` is the result of an earlier pass over the same resources: what
+    was settled there is kept as it is, without probing it again.
+    """
     out = []
-    for r in resources:
+    for r, old in zip(resources, before or [None] * len(resources), strict=True):
+        if old and old.settled:
+            if old.actions:
+                ctx.changing.add(r.key)
+            out.append(old)
+            continue
+        ctx.asked = False
         p = r.probe(ctx)
         # unknown (needs sudo) is left alone until it has been probed
         acts = r.plan(ctx, p) if p.ok is False else []
+        follows = ctx.asked
         if acts:
             ctx.changing.add(r.key)
-        out.append(Planned(r, p, acts))
+        out.append(Planned(r, p, acts, follows))
         ctx.log.event(
             "resource",
             kind=r.kind,
@@ -157,7 +184,9 @@ def check_converged(resources, ctx):
     bad = [pl for pl in planned if not pl.probe.ok]
     ctx.log.event("converged", ok=not bad, remaining=[pl.res.key for pl in bad])
     for pl in bad:
-        say(f"  NOT CONVERGED  {pl.res.label()}: {pl.probe.have}  {pl.probe.reason}")
+        now = f"{pl.probe.have}  {pl.probe.reason}".strip()
+        say(Check("FAILED", f"not converged: {pl.res.label()}: {now}"))
     if bad:
         raise Fail(f"not converged: {', '.join(pl.res.key for pl in bad)}")
-    say(f"  ok  re-probed: all {len(planned)} items match the desired state")
+    text = f"re-probed: all {len(planned)} items match the desired state"
+    say(Check("ok", text))

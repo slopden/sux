@@ -905,7 +905,7 @@ class TestRun:
         assert code == 0, out
         assert len(prompts) == 2  # the plan, and `confirm` before the gpu stage
         lv = machine.libvirt
-        assert "ok  kvm (needed by windows-vm): nothing to change" in out
+        assert "ok       kvm (needed by windows-vm): nothing to change" in out
         assert [c[1:] for c in lv.did("start")] == [["win11"]]
         assert len(lv.did("send-key")) == 10  # "Press any key to boot from CD"
         assert (machine.images / "win11.qcow2.installed").exists()
@@ -922,8 +922,8 @@ class TestRun:
                  "Stage 4/5  gpu", "Stage 5/5  looking-glass"]  # fmt: skip
         places = [out.index(text) for text in order]
         assert places == sorted(places)
-        assert "ok  win11 is running: Windows 11 Pro" in out
-        assert "ok  win11: an RDP server answers on 100.64.0.7, fd7a::7 port 3389" in out
+        assert "ok       win11 is running: Windows 11 Pro" in out
+        assert "ok       win11: an RDP server answers on 100.64.0.7, fd7a::7 port 3389" in out
         password = re.search(r"user alice  password (\S+)", out)[1]
         assert len(password) == 12
         log = "\n".join(json.dumps(e) for e in machine.events())
@@ -965,7 +965,7 @@ class TestRun:
         assert len(lv.did("send-key")) == 10  # Windows was not installed again
         assert (machine.root / "etc/libvirt/hooks/qemu.d/50-winvm").stat().st_mode & 0o111
         assert "systemctl restart libvirtd" in sh.changes()  # it reads hooks at start
-        assert "ok  win11: Windows reports NVIDIA GeForce RTX 5070 working" in out
+        assert "ok       win11: Windows reports NVIDIA GeForce RTX 5070 working" in out
         assert lv.states["win11"] == "running"
         assert "gpu = nvidia" in (machine.root / "etc/winvm/win11.conf").read_text()
         code, sh, prompts = machine.run()
@@ -1102,7 +1102,7 @@ class TestSingleFile:
         )  # fmt: skip
         assert asked.returncode == 1, asked.stderr
         assert "windows-vm has questions that are not answered yet:" in asked.stdout
-        assert "gpu             GPU passed to this VM" in asked.stdout
+        assert "gpu          GPU passed to this VM" in asked.stdout
 
 
 class TestLookingGlassBuild:

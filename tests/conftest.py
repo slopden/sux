@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from sux.install import model, resources
+from sux.install import model, render, resources
 from sux.install.log import RunLog
 from sux.install.shell import Shell
 
@@ -170,6 +170,9 @@ def sandbox(tmp_path, monkeypatch):
     host = tmp_path / "host"
     for name in ("config", "state", "home", "units", "sources", "keyrings"):
         (host / name).mkdir(parents=True)
+    # the paths under tmp_path are long: one line each, whatever the terminal
+    monkeypatch.setattr(render, "MAX_WIDTH", 10_000)
+    monkeypatch.setenv("COLUMNS", "10000")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(host / "config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(host / "state"))
     monkeypatch.setenv("HOME", str(host / "home"))

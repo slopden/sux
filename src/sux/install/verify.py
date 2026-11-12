@@ -5,6 +5,7 @@ import urllib.error
 import urllib.request
 
 from sux.install.log import Fail, say
+from sux.install.render import Check
 
 HTTP_RETRY_S = 0.5
 
@@ -86,18 +87,31 @@ VERIFY = {
 }
 
 
+def run_check(ctx, entry):
+    """Run one health check; its message, or Fail saying what is wrong."""
+    kind = entry.get("kind")
+    if kind not in VERIFY:
+        raise Fail(f"verify: unknown kind {kind!r} (known: {', '.join(VERIFY)})")
+    try:
+        return VERIFY[kind](ctx, entry)
+    except KeyError as e:
+        raise Fail(f"verify {kind}: missing key {e}") from None
+
+
 def run_verify(entries, ctx):
-    """Run the health checks in order; the first failure stops the run."""
+    """Run every health check, in order; fail once, at the end, naming what failed."""
+    failed = []
     for entry in entries:
         kind = entry.get("kind")
-        if kind not in VERIFY:
-            raise Fail(f"verify: unknown kind {kind!r} (known: {', '.join(VERIFY)})")
         try:
-            message = VERIFY[kind](ctx, entry)
-        except KeyError as e:
-            raise Fail(f"verify {kind}: missing key {e}") from None
+            message = run_check(ctx, entry)
         except Fail as e:
             ctx.log.event("verify", kind=kind, ok=False, error=str(e))
-            raise
+            say(Check("FAILED", str(e)))
+            failed.append(str(e))
+            continue
         ctx.log.event("verify", kind=kind, ok=True, msg=message)
-        say(f"  ok  {message}")
+        say(Check("ok", message))
+    if failed:
+        count = f"{len(failed)} of {len(entries)} checks failed"
+        raise Fail(f"{count}: {'; '.join(failed)}")

@@ -14,7 +14,7 @@ from .conftest import SITES, FakeShell
 from .test_install_flow import scripted
 
 pytestmark = pytest.mark.usefixtures("sandbox")
-MENU = "\n[a]dd / [e]dit / [r]emove / [d]one: "
+MENU = "add / edit / remove / done: "
 
 
 @pytest.fixture
@@ -265,7 +265,7 @@ class TestMenu:
         rows, prompts = self.edit([], "d", asked=[{"name": "a", "root": "/a"}])
         assert rows == [{"name": "a", "root": "/a"}]
         assert prompts == [MENU]
-        assert 'a               root = "/a"' in capsys.readouterr().out
+        assert 'a         root = "/a"' in capsys.readouterr().out
 
     def test_add_edit_remove(self):
         start = [{"name": "a", "root": "/a"}]
@@ -280,7 +280,7 @@ class TestMenu:
     def test_with_one_instance_there_is_nothing_to_choose(self):
         rows, prompts = self.edit([{"name": "a"}], "r", "d")
         assert rows == [{"name": "a", "removed": True}]
-        assert prompts == [MENU, "\n[a]dd / [d]one: "]
+        assert prompts == [MENU, "add / done: "]
 
     def test_a_new_key_is_a_new_instance(self):
         start = [{"name": "a", "root": "/a"}]
@@ -355,14 +355,14 @@ class TestFlow:
         code, _, prompts = host.first()
         assert code == 0
         assert prompts[:3] == ["Where the index goes: ", "Site name: ", "Folder: "]
-        assert prompts[-2:] == [MENU, "\n[a]pply / [e]xit: "]
+        assert prompts[-2:] == [MENU, "apply / exit: "]
         assert len(prompts) == 6  # the FTP port is not asked: ftp is not ticked
         assert host.sites() == [
             {"name": "a", "root": str(host.tmp / "a"), "serve": ["web"]}
         ]
         assert (host.tmp / "a" / "a.web").read_text() == f"[a]\nroot = {host.tmp}/a\n"
         assert host.units["web-a.service"]["active"]
-        assert "ok  active: web-a.service" in capsys.readouterr().out
+        assert "ok       active: web-a.service" in capsys.readouterr().out
 
     def test_second_run_asks_nothing(self, host):
         host.first()
@@ -373,8 +373,8 @@ class TestFlow:
         code, _, _ = host.run(tty=False)
         assert code == 1
         out = capsys.readouterr().out
-        assert "base            Where the index goes" in out
-        assert "name            Site name" in out
+        assert "base      Where the index goes" in out
+        assert "name      Site name" in out
 
     def test_add_a_second_one(self, host, capsys):
         host.first()
@@ -445,7 +445,7 @@ class TestFlow:
         assert [s["name"] for s in host.sites()] == ["a"]  # forgotten once it is gone
         out = capsys.readouterr().out
         assert "(absent)" in out
-        assert "ok  active: web-a.service" in out
+        assert "ok       active: web-a.service" in out
 
         code, sh, prompts = host.run()
         assert (code, prompts, sh.changes()) == (0, [], [])
@@ -467,7 +467,7 @@ class TestFlow:
 
         code, sh, prompts = host.run("a")
         assert code == 0
-        assert prompts == ["\n[a]pply / [e]xit: "]
+        assert prompts == ["apply / exit: "]
         assert not (host.tmp / "a").exists()
         assert not (host.base / "index.conf").exists()  # nothing left to index
         assert "site" not in load_answers("sites") or host.sites() == []
