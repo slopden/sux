@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Windows ($name)
+Comment=Start the $name virtual machine
+Exec=sh -c "$winvm start $name; sleep 10"
+Icon=computer
+Terminal=true
+Categories=System;

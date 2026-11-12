@@ -1,0 +1,1 @@
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", KERNELS=="$item", PROGRAM=="$winvm display-elsewhere $item", TAG+="mutter-device-ignore"

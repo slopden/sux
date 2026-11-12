@@ -8,9 +8,15 @@ Modes:
             Docker container with rust, uv, node, and claude-code.
             Non-root user with sudo and NVIDIA GPU passthrough.
             `sux <name>` will automatically reattach if a container exists.
+            The repository's .git is read-only inside the container, so
+            commit from the host. `--git-rw` lets the sandbox write git
+            state (commits work, hooks and config stay read-only); this
+            is best-effort, not a security boundary.
 
-  worktree  `sux -w <name>` creates a git worktree in ./worktrees/<name>
-            on a new branch and opens a tmux session in it.
+  worktree  `sux -w <name>` creates a git worktree for branch <name> in
+            worktrees/<name> at the root of the repository, or reuses the
+            worktree that branch is already checked out in, initialises
+            its submodules and opens a tmux session in it.
 
   combined  `sux -w -d <name>` creates a worktree and runs it in Docker.
 
@@ -25,3 +31,7 @@ Modes:
 
   config    `sux --config` writes a sane ~/.tmux.conf and rebuilds the
             Docker base image.
+
+  install   `sux install` lists the installer recipes and their state.
+            `sux install <recipe>` checks this machine, prints the plan,
+            then asks: apply / reprobe with sudo / exit.

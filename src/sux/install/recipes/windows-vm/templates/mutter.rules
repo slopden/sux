@@ -1,0 +1,4 @@
+# $header
+# GNOME (mutter) does not open a GPU tagged mutter-device-ignore. The tag is
+# set only while a display is connected to another GPU.
+$rules

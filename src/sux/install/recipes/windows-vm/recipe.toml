@@ -1,0 +1,642 @@
+# Windows 11 virtual machines on KVM/libvirt, used mainly over Remote Desktop
+# on the tailnet, each optionally with one of this machine's GPUs passed
+# through. The host stack (QEMU, libvirt, its network) is the `kvm` recipe.
+#
+# A VM is one [[vm]] in the answers. Its GPU is one of its answers and part of
+# its libvirt definition: `none`, `nvidia` (a discrete NVIDIA card) or `igpu`
+# (the Intel integrated GPU, EXPERIMENTAL). Change it with --reconfigure and
+# run again; nothing is reinstalled. Two VMs may name the same GPU and then
+# cannot run at the same time.
+#
+# Stages, each verified before the next one starts:
+#   windows        Windows installed from the ISO, unattended, no GPU
+#   rdp            RDP forwarded on the tailnet addresses: usable from here on
+#   rehearsal      the host lets go of the GPU and takes it back, without a VM
+#   gpu            the GPU is in the definition and Windows reports the card
+#   looking-glass  optional: the guest's screen in a window on the host desktop
+# A failure in `rehearsal` or `gpu` leaves the VM defined without the GPU and
+# usable over RDP.
+#
+# What happens to the host's screen is decided each time a VM with the NVIDIA
+# card starts (in libvirt's qemu hook, `winvm hook`): with a display on an
+# Intel output the desktop stays up and GNOME is told to leave the card alone
+# (udev rule); otherwise the display manager is stopped while the VM runs and
+# started again when the card is back, also when the start fails. The hook
+# refuses to start a VM whose GPU something else on the host holds, and lists
+# the processes. No kernel command line, initramfs or boot loader change, no
+# DKMS module, nothing that needs a Secure Boot key.
+#
+# Sources:
+#   libvirt hooks (arguments, failure, no calls into libvirt, qemu.d since 6.5,
+#     the script must exist when the daemon starts): https://libvirt.org/hooks.html
+#   managed='yes', Secure Boot firmware selection, TPM, Hyper-V features,
+#     shmem, <metadata>: https://libvirt.org/formatdomain.html
+#     https://libvirt.org/kbase/secureboot.html
+#   virsh undefine/net-update/nodedev-detach: https://libvirt.org/manpages/virsh.html
+#   Windows answer file: https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/
+#   RDP on the hardware GPU (bEnumerateHWBeforeSW, AVC*):
+#     https://learn.microsoft.com/en-us/windows/client-management/mdm/policy-csp-admx-terminalserver
+#   virtio-win: https://github.com/virtio-win/virtio-win-pkg-scripts
+#   Looking Glass B8 (build, IVSHMEM size and XML, tmpfiles, IDD):
+#     https://github.com/gnif/LookingGlass/tree/B8-rc1/doc
+#   mutter-device-ignore: https://gitlab.gnome.org/GNOME/mutter/-/blob/main/src/backends/meta-udev.c
+#   Intel GPU assignment: https://github.com/qemu/qemu/blob/v10.2.0/docs/igd-assign.txt
+
+[recipe]
+name = "windows-vm"
+description = "Windows 11 VMs: RDP over the tailnet, optional GPU passthrough"
+requires = { arch = ["amd64"] }
+needs = ["kvm"]
+
+[[stage]]
+name = "windows"
+title = "Windows installed and reachable, no GPU"
+
+[[stage]]
+name = "rdp"
+title = "RDP forward on the tailnet"
+
+[[stage]]
+name = "rehearsal"
+title = "GPU handoff rehearsal on the host (no VM involved)"
+confirm = true
+
+[[stage]]
+name = "gpu"
+title = "GPU in the VM; Windows reports the card"
+confirm = true
+
+[[stage]]
+name = "looking-glass"
+title = "Looking Glass client (optional)"
+
+[instances]
+name = "vm"
+key = "name"
+
+[instances.vars]
+name        = { ask = "VM name", default = "win11" }
+iso         = { ask = "Windows 11 ISO (from microsoft.com/software-download/windows11)", kind = "path" }
+edition     = { ask = "Edition to install (image name on the ISO)", default = "Windows 11 Pro" }
+product_key = { ask = "Product key (empty: Setup asks for it on the VM's screen, see virt-manager)", default = "" }
+vcpus       = { ask = "vCPUs (pinned to performance-core threads)", hook = "default_vcpus" }
+memory_gib  = { ask = "Memory (GiB)", hook = "default_memory" }
+disk_gib    = { ask = "Disk size (GiB)", default = 120 }
+disk_dir    = { ask = "Folder for the disk image", kind = "path", default = "/var/lib/libvirt/images" }
+username    = { ask = "Windows user name", fact = "invoking_user" }
+rdp         = { ask = "Forward RDP on this machine's tailscale addresses", kind = "bool", default = true }
+rdp_port    = { ask = "RDP port on this machine (one per VM)", default = 3389, when = "rdp" }
+guest_ip    = { ask = "Guest address on libvirt's default network", hook = "default_guest_ip" }
+gpu         = { ask = "GPU passed to this VM (igpu = Intel integrated, EXPERIMENTAL)", kind = "choice", choices = "$gpu_choices", default = "none" }
+# QEMU needs this for an Intel GPU in a UEFI guest and nobody publishes a
+# built one with a checksum: it has to be built on this machine.
+igd_rom     = { ask = "Option ROM for the Intel GPU (igd.rom built from github.com/tomitamoeko/VfioIgdPkg)", kind = "path", when = "gpu == 'igpu'" }
+# RTX 50 cards may not come back from the function-level reset at guest
+# shutdown ("not ready 65535ms after FLR"); `bus` uses a bus reset instead.
+reset_method = { ask = "PCI reset_method for the NVIDIA card (empty: kernel default; workaround: bus)", default = "", when = "gpu == 'nvidia'" }
+looking_glass = { ask = "Looking Glass: show this VM's screen in a window on the host desktop", kind = "bool", default = false, when = "gpu == 'nvidia' and desktop_elsewhere" }
+# No checksum is published for it, so it is not downloaded here.
+lg_installer = { ask = "looking-glass-idd-setup.exe (the release the client is pinned to), downloaded from looking-glass.io/downloads", kind = "path", when = "looking_glass" }
+fullscreen  = { ask = "Open Looking Glass fullscreen", kind = "bool", default = true, when = "looking_glass" }
+shm_mib     = { ask = "Looking Glass shared memory in MiB (32: up to 1920x1200, 64: up to 3440x1440, 128: up to 4K)", default = 64, when = "looking_glass" }
+purge       = { ask = "On --remove, also delete the disk image, NVRAM and TPM state", kind = "bool", default = false }
+disk         = "$disk_dir/$name.qcow2"
+state        = "/var/lib/winvm/$name"
+answers      = "$state/unattend/autounattend.xml"
+unattend_iso = "$disk_dir/$name-unattend.iso"
+tools_iso    = "$disk_dir/$name-tools.iso"
+shm          = "/dev/shm/looking-glass-$name"
+conf         = "/etc/winvm/$name.conf"
+rdp_unit     = "/etc/systemd/system/winvm-rdp-$name"
+mac          = { hook = "vm_mac" }
+installed    = { hook = "vm_installed" }
+pins         = { hook = "vm_pins" }
+cores        = { hook = "vm_cores" }
+emulator_cpus = { hook = "vm_emulator_cpus" }
+gpu_address  = { hook = "vm_gpu_address" }
+gpu_functions = { hook = "vm_gpu_functions" }
+
+[vars]
+header = "Managed by sux install windows-vm -- change the answers with --reconfigure, not this file."
+gpu_choices       = { hook = "gpu_choices" }        # none, and the GPUs found
+desktop_elsewhere = { hook = "desktop_elsewhere" }  # a display on an Intel output
+daemon  = "libvirtd"
+user    = { fact = "invoking_user" }
+# Parts of the domain definition that only one of its two forms has.
+install_media = ""
+tools_media = ""
+hostdevs = ""
+igd = ""
+shmem = ""
+locale  = "en-US"
+install_timeout_min = 120
+# NVIDIA modules that keep the card open while loaded; the hook unloads them
+# before the card is detached and loads them again afterwards.
+nvidia_unload = "nvidia_drm nvidia_modeset nvidia_uvm"
+winvm     = "/usr/local/bin/winvm"
+hook      = "/etc/libvirt/hooks/qemu.d/50-winvm"
+udev_rule = "/etc/udev/rules.d/61-winvm-mutter.rules"
+images    = "/var/lib/libvirt/images"
+proxy_max_connections = 16
+
+# virtio-win: drivers and guest tools for Windows, pinned. The publisher lists
+# no checksum for the ISO as a file; this is the sha256 of the same ISO in the
+# header of virtio-win-0.1.302-1.noarch.rpm in the same directory.
+virtio_version = "0.1.302"
+virtio_url     = "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-$virtio_version-1/virtio-win-$virtio_version.iso"
+virtio_sha256  = "303f7ae40dad495d6ae474fdc571df58958a4dbc5c37a522d80f9a203867949d"
+virtio_iso     = "$images/virtio-win-$virtio_version.iso"
+
+# Looking Glass: a release candidate, pinned by the commit of its tag (the
+# submodules are pinned through it). Client and guest driver must match.
+lg_version    = "B8-rc1"
+lg_commit     = "1b485305d9267207701d01adbe7907e90bfd6990"
+lg_repository = "https://github.com/gnif/LookingGlass.git"
+lg_prefix     = "/opt/looking-glass/$lg_version"
+lg_link       = "/opt/looking-glass/current"
+
+gpu_vms    = { collect = "name", when = "gpu != 'none'" }
+gpu_kinds  = { collect = "gpu", when = "gpu != 'none'" }
+gpu_cards  = { collect = "gpu_address", when = "gpu != 'none'" }
+lg_vms     = { collect = "name", when = "looking_glass" }
+
+# ------------------------------------------------------------------ windows
+
+[[step]]
+stage = "windows"
+kind = "python"
+each = "vm"
+keep = true
+function = "preflight"
+label = "preflight $name"
+vm = "$name"
+iso = "$iso"
+disk = "$disk"
+disk_gib = "$disk_gib"
+memory_gib = "$memory_gib"
+vcpus = "$vcpus"
+username = "$username"
+guest_ip = "$guest_ip"
+rdp = "$rdp"
+rdp_port = "$rdp_port"
+gpu = "$gpu"
+installed = "$installed"
+
+[[step]]
+stage = "windows"
+kind = "file"
+path = "$winvm"
+mode = "0755"
+template = "winvm"
+
+[[step]]
+stage = "windows"
+kind = "dir"
+path = "/etc/winvm"
+
+[[step]]
+stage = "windows"
+kind = "file"
+each = "vm"
+path = "$conf"
+template = "vm.conf"
+
+[[step]]
+stage = "windows"
+kind = "file"
+each = "vm"
+path = "/usr/local/share/applications/winvm-$name.desktop"
+template = "winvm.desktop"
+
+[[step]]
+stage = "windows"
+kind = "dir"
+path = "/var/lib/winvm"
+
+[[step]]
+stage = "windows"
+kind = "dir"
+each = "vm"
+path = "$state"
+
+[[step]]
+stage = "windows"
+kind = "dir"
+each = "vm"
+path = "$state/unattend"
+
+[[step]]
+stage = "windows"
+kind = "download"
+path = "$virtio_iso"
+url = "$virtio_url"
+sha256 = "$virtio_sha256"
+
+# The answer file is also where the generated Windows password is kept.
+[[step]]
+stage = "windows"
+kind = "secret"
+each = "vm"
+path = "$answers"
+bytes = 9
+template = "autounattend.xml"
+fragments = [
+    { name = "product_key_xml", text = "                    <ProductKey><Key>$product_key</Key><WillShowUI>OnError</WillShowUI></ProductKey>", when = "product_key" },
+]
+
+[[step]]
+stage = "windows"
+kind = "file"
+each = "vm"
+path = "$state/unattend/setup.cmd"
+template = "setup.cmd"
+
+[[step]]
+stage = "windows"
+kind = "image"
+each = "vm"
+path = "$unattend_iso"
+source = "$state/unattend"
+label = "UNATTEND"
+
+[[step]]
+stage = "windows"
+kind = "image"
+each = "vm"
+path = "$disk"
+size = "${disk_gib}G"
+purge = "$purge"
+
+[[step]]
+stage = "windows"
+kind = "libvirt_dhcp_host"
+each = "vm"
+mac = "$mac"
+ip = "$guest_ip"
+name = "$name"
+
+# The definition Windows is installed with: the three CDs, no GPU. Once the
+# disk is marked as installed this step no longer applies, and the definition
+# of the `gpu` stage is the one that counts.
+[[step]]
+stage = "windows"
+kind = "libvirt_domain"
+each = "vm"
+when = "not installed"
+keep = true
+name = "$name"
+template = "domain.xml"
+fragments = [
+    { name = "vcpupins", text = "    <vcpupin vcpu='$vcpu' cpuset='$cpu'/>", each = "pins" },
+    { name = "install_media", template = "domain-install.xml" },
+]
+
+[[step]]
+stage = "windows"
+kind = "python"
+each = "vm"
+function = "windows_install"
+label = "Windows installed in $name"
+vm = "$name"
+disk = "$disk"
+purge = "$purge"
+timeout_min = "$install_timeout_min"
+
+[[verify]]
+stage = "windows"
+kind = "python"
+each = "vm"
+function = "guest_up"
+vm = "$name"
+
+# ------------------------------------------------------------------ rdp
+# The guest's RDP port is reachable on this machine's tailscale addresses
+# only: a socket unit holds the port there and hands connections to
+# systemd-socket-proxyd. Nothing listens on the LAN.
+
+[[step]]
+stage = "rdp"
+kind = "file"
+each = "vm"
+when = "rdp"
+path = "$rdp_unit.socket"
+template = "winvm-rdp.socket"
+fragments = [
+    { name = "listen_streams", text = "ListenStream=$host:$rdp_port", each = "tailscale_ips" },
+]
+
+[[step]]
+stage = "rdp"
+kind = "file"
+each = "vm"
+when = "rdp"
+path = "$rdp_unit.service"
+template = "winvm-rdp.service"
+
+[[step]]
+stage = "rdp"
+kind = "unit"
+each = "vm"
+when = "rdp"
+name = "winvm-rdp-$name.socket"
+restart_on = ["$rdp_unit.socket"]
+
+[[step]]
+stage = "rdp"
+kind = "unit"
+each = "vm"
+when = "rdp"
+name = "winvm-rdp-$name.service"
+state = "on-demand"
+restart_on = ["$rdp_unit.service"]
+
+[[verify]]
+stage = "rdp"
+kind = "unit_active"
+each = "vm"
+when = "rdp"
+name = "winvm-rdp-$name.socket"
+
+[[verify]]
+stage = "rdp"
+kind = "listeners"
+each = "vm"
+when = "rdp"
+port = "$rdp_port"
+addresses = ["$tailscale_ips"]
+
+[[verify]]
+stage = "rdp"
+kind = "python"
+each = "vm"
+when = "rdp"
+function = "rdp_reachable"
+vm = "$name"
+port = "$rdp_port"
+addresses = "$tailscale_ips"
+
+[[verify]]
+stage = "rdp"
+kind = "python"
+each = "vm"
+when = "rdp"
+function = "connect_help"
+vm = "$name"
+port = "$rdp_port"
+addresses = "$tailscale_ips"
+username = "$username"
+answers = "$answers"
+
+# ------------------------------------------------------------------ rehearsal
+
+# libvirt runs it around every guest start and stop; it acts only on the VMs
+# of this recipe that have a device passed through.
+[[step]]
+stage = "rehearsal"
+kind = "file"
+when = "gpu_vms"
+path = "$hook"
+mode = "0755"
+template = "qemu-hook"
+
+# libvirt looks for hook scripts only when the daemon starts. Running guests
+# are not affected by its restart.
+[[step]]
+stage = "rehearsal"
+kind = "unit"
+when = "gpu_vms"
+keep = true
+name = "$daemon"
+restart_on = ["$hook"]
+
+# GNOME opens every GPU. This makes it leave a passed-on card alone, but only
+# while a display is connected to another GPU: a card that carries the only
+# screen stays the desktop's.
+[[step]]
+stage = "rehearsal"
+kind = "file"
+when = "gpu_vms"
+path = "$udev_rule"
+template = "mutter.rules"
+fragments = [
+    { name = "rules", template = "mutter-rule", each = "gpu_cards" },
+]
+
+[[step]]
+stage = "rehearsal"
+kind = "python"
+when = "gpu_vms"
+keep = true
+function = "udev_applied"
+label = "udev rules loaded"
+rule = "$udev_rule"
+
+[[step]]
+stage = "rehearsal"
+kind = "python"
+each = "vm"
+when = "gpu != 'none'"
+function = "gpu_rehearsal"
+label = "rehearsal: $gpu GPU ($name)"
+vm = "$name"
+gpu = "$gpu"
+igd_rom = "$igd_rom"
+reset_method = "$reset_method"
+unload = "$nvidia_unload"
+still_used = "$gpu_kinds"
+
+[[verify]]
+stage = "rehearsal"
+kind = "python"
+each = "vm"
+when = "gpu != 'none'"
+function = "gpu_host"
+vm = "$name"
+gpu = "$gpu"
+
+# ------------------------------------------------------------------ gpu
+
+[[step]]
+stage = "gpu"
+kind = "dir"
+each = "vm"
+when = "looking_glass"
+path = "$state/tools"
+
+[[step]]
+stage = "gpu"
+kind = "python"
+each = "vm"
+when = "looking_glass"
+function = "lg_guest_tools"
+label = "Looking Glass installer for $name"
+installer = "$lg_installer"
+dest = "$state/tools/looking-glass-idd-setup.exe"
+version = "$lg_version"
+
+[[step]]
+stage = "gpu"
+kind = "image"
+each = "vm"
+when = "looking_glass"
+path = "$tools_iso"
+source = "$state/tools"
+label = "TOOLS"
+
+[[step]]
+stage = "gpu"
+kind = "file"
+each = "vm"
+when = "looking_glass"
+path = "/etc/tmpfiles.d/10-looking-glass-$name.conf"
+template = "looking-glass.tmpfiles"
+
+[[step]]
+stage = "gpu"
+kind = "python"
+each = "vm"
+when = "looking_glass"
+function = "shm_file"
+label = "shared memory for $name"
+path = "$shm"
+conf = "/etc/tmpfiles.d/10-looking-glass-$name.conf"
+
+# The definition a VM runs with from here on: no install media, and its GPU.
+[[step]]
+stage = "gpu"
+kind = "libvirt_domain"
+each = "vm"
+name = "$name"
+purge = "$purge"
+template = "domain.xml"
+fragments = [
+    { name = "vcpupins", text = "    <vcpupin vcpu='$vcpu' cpuset='$cpu'/>", each = "pins" },
+    { name = "hostdevs", template = "domain-hostdev.xml", each = "gpu_functions", when = "gpu == 'nvidia'" },
+    { name = "igd", template = "domain-igd.xml", each = "gpu_functions", when = "gpu == 'igpu'" },
+    { name = "shmem", template = "domain-shmem.xml", when = "looking_glass" },
+    { name = "tools_media", template = "domain-tools.xml", when = "looking_glass" },
+]
+
+[[step]]
+stage = "gpu"
+kind = "python"
+each = "vm"
+when = "gpu != 'none'"
+function = "gpu_guest_check"
+label = "Windows in $name reports the $gpu GPU"
+vm = "$name"
+gpu = "$gpu"
+igd_rom = "$igd_rom"
+address = "$gpu_address"
+state = "$state"
+
+[[verify]]
+stage = "gpu"
+kind = "python"
+each = "vm"
+when = "gpu != 'none'"
+function = "gpu_guest"
+vm = "$name"
+gpu = "$gpu"
+
+# ------------------------------------------------------------------ looking-glass
+# Shared memory is a file in /dev/shm (tmpfiles.d), not the kvmfr module.
+
+# Never removed again: compilers and libraries other things may use by then.
+[[step]]
+stage = "looking-glass"
+kind = "apt"
+when = "lg_vms"
+keep = true
+packages = [
+    "binutils", "cmake", "make", "gcc", "g++", "git", "pkg-config",
+    "fonts-dejavu-core", "libdw-dev", "libunwind-dev",
+    "libfontconfig-dev", "libfuse3-dev", "libgmp-dev", "nettle-dev",
+    "libegl-dev", "libgl-dev", "libgles-dev", "libspice-protocol-dev",
+    "libx11-dev", "libxcursor-dev", "libxfixes-dev", "libxi-dev",
+    "libxinerama-dev", "libxpresent-dev", "libxrandr-dev", "libxss-dev",
+    "libxkbcommon-dev", "libwayland-bin", "libwayland-dev", "libdecor-0-dev",
+    "libpipewire-0.3-dev", "libpulse-dev", "libsamplerate0-dev",
+    "libusbredirparser-dev",
+]
+
+[[step]]
+stage = "looking-glass"
+kind = "python"
+when = "lg_vms"
+function = "lg_build"
+label = "looking-glass-client $lg_version"
+version = "$lg_version"
+commit = "$lg_commit"
+repository = "$lg_repository"
+prefix = "$lg_prefix"
+link = "$lg_link"
+
+[[verify]]
+stage = "looking-glass"
+kind = "command"
+when = "lg_vms"
+argv = ["test", "-x", "$lg_link/bin/looking-glass-client"]
+
+[[verify]]
+stage = "looking-glass"
+kind = "python"
+each = "vm"
+when = "looking_glass"
+function = "lg_help"
+vm = "$name"
+version = "$lg_version"
+
+# ------------------------------------------------------------------ diagnostics
+# In the status snapshot the engine logs after every applied stage and on any
+# failure: enough to see from the log alone why a VM or a handoff failed.
+
+[[status]]
+argv = ["virsh", "-r", "-c", "qemu:///system", "list", "--all"]
+
+[[status]]
+each = "vm"
+argv = ["virsh", "-r", "-c", "qemu:///system", "dominfo", "$name"]
+
+[[status]]
+each = "vm"
+argv = ["virsh", "-r", "-c", "qemu:///system", "domstate", "--reason", "$name"]
+
+[[status]]
+each = "vm"
+argv = ["virsh", "-r", "-c", "qemu:///system", "dumpxml", "$name"]
+
+[[status]]
+each = "vm"
+sudo = true
+argv = ["tail", "-n", "150", "/var/log/libvirt/qemu/$name.log"]
+
+[[status]]
+argv = ["virsh", "-r", "-c", "qemu:///system", "net-dumpxml", "default"]
+
+[[status]]
+sudo = true
+argv = ["journalctl", "-u", "$daemon", "-u", "virtqemud", "-n", "200", "--no-pager", "-o", "short-iso"]
+
+[[status]]
+sudo = true
+argv = ["journalctl", "-t", "winvm", "-n", "200", "--no-pager", "-o", "short-iso"]
+
+[[status]]
+sudo = true
+argv = ["journalctl", "-k", "-b", "--no-pager", "-o", "short-iso", "-n", "300", "--grep", "vfio|nvidia|NVRM|i915|iommu|DMAR|not ready"]
+
+[[status]]
+argv = ["lspci", "-nnk", "-d", "::0300"]
+
+[[status]]
+argv = ["lspci", "-nnk", "-d", "::0403"]
+
+[[status]]
+argv = ["nvidia-smi"]
+
+[[status]]
+argv = ["systemctl", "is-active", "display-manager.service"]
+
+[[status]]
+argv = ["$winvm", "status"]

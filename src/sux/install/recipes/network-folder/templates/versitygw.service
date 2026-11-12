@@ -1,0 +1,67 @@
+$header
+[Unit]
+Description=S3 gateway (versitygw posix) for $root on the tailnet
+Documentation=https://github.com/versity/versitygw/wiki
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+RequiresMountsFor=$root
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=$user
+Group=$group
+UMask=$umask
+WorkingDirectory=$root
+EnvironmentFile=$credentials
+ExecStart=/usr/bin/versitygw \
+$ports
+    --port=127.0.0.1:$port \
+    --region=$region \
+    --health=$health_path \
+    --quiet \
+$keep_alive_flag
+$read_only_flag
+$access_log_flag
+    posix \
+    --dir-perms=$dir_perms \
+    --file-perms=$file_perms \
+    --concurrency=$concurrency \
+    --object-lock-mode=$object_lock_mode \
+    $root
+# The tailnet IP appears only once tailscaled is up. Until then versitygw exits 1
+# ("bind: cannot assign requested address") and is retried every 2s, forever.
+Restart=always
+RestartSec=2
+LimitNOFILE=$max_open_files
+$logs_directory
+$no_logs_directory
+
+# Sandbox: no privileges, writable only under $root.
+$minimal_root_view
+$host_root_view
+# Own PID namespace: /proc shows only this service, so a symlink to
+# /proc/<pid>/root of another $user process can't lead back to the host fs.
+PrivatePIDs=yes
+ProcSubset=pid
+ProtectProc=invisible
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

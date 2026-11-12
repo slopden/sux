@@ -1,0 +1,17 @@
+# $header
+[Unit]
+Description=Relay tailnet RDP connections to the $name VM ($guest_ip)
+Requires=winvm-rdp-$name.socket
+After=winvm-rdp-$name.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=$proxy_max_connections $guest_ip:3389
+Restart=on-failure
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service

@@ -1,0 +1,4 @@
+ProtectSystem=strict
+ReadWritePaths=$root
+ProtectHome=yes
+PrivateTmp=yes

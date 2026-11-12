@@ -5,6 +5,7 @@ from sux.config import apply_config
 from sux.constants import APT_PROFILES
 from sux.docker import list_sessions
 from sux.git import ensure_worktree
+from sux.install.flow import install_main
 from sux.session import attach_or_create, docker_session, kill_session
 from sux.testing import config_test
 
@@ -19,9 +20,15 @@ Modes:
             Docker container with rust, uv, node, and claude-code.
             Non-root user with sudo and NVIDIA GPU passthrough.
             `sux <name>` will automatically reattach if a container exists.
+            The repository's .git is read-only inside the container, so
+            commit from the host. `--git-rw` lets the sandbox write git
+            state (commits work, hooks and config stay read-only); this
+            is best-effort, not a security boundary.
 
-  worktree  `sux -w <name>` creates a git worktree in ./worktrees/<name>
-            on a new branch and opens a tmux session in it.
+  worktree  `sux -w <name>` creates a git worktree for branch <name> in
+            worktrees/<name> at the root of the repository, or reuses the
+            worktree that branch is already checked out in, initialises
+            its submodules and opens a tmux session in it.
 
   combined  `sux -w -d <name>` creates a worktree and runs it in Docker.
 
@@ -39,10 +46,20 @@ Modes:
             `sux --config=minimal` builds without profiles.
             `sux --config=gpu` builds with only the gpu profile.
             `sux --config --apt=vim` adds literal apt packages.
+
+  install   `sux install` lists the installer recipes and their state.
+            `sux install <recipe>` checks this machine, prints the plan,
+            then asks: apply / reprobe with sudo / exit. `--remove` plans
+            the removal instead. See `sux install --help`.
 """
 
 
 def main():  # noqa: C901, PLR0912, PLR0915
+    # `install` has its own arguments, so it is taken before the flat parser
+    # (a tmux session literally named "install" is unreachable).
+    if sys.argv[1:2] == ["install"]:
+        return install_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser(
         description="A tmux wrapper with sandboxing and screen keybindings",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -70,6 +87,12 @@ def main():  # noqa: C901, PLR0912, PLR0915
         help="Run session in a Docker container",
     )
     parser.add_argument(
+        "--git-rw",
+        action="store_true",
+        help="With -d, let the sandbox write git state: commits work, hooks "
+        "and config stay read-only; best-effort, not a security boundary",
+    )
+    parser.add_argument(
         "-w",
         "--worktree",
         action="store_true",
@@ -92,7 +115,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
 
     if args.config_test:
         config_test()
-        return
+        return None
 
     if args.config is not None:
         if args.config == "all":
@@ -131,13 +154,14 @@ def main():  # noqa: C901, PLR0912, PLR0915
         elif args.worktree:
             ensure_worktree(name)
             if args.docker:
-                docker_session(name, commands=commands)
+                docker_session(name, commands=commands, git_rw=args.git_rw)
             else:
                 attach_or_create(name, commands=commands)
         elif args.docker:
-            docker_session(name, commands=commands)
+            docker_session(name, commands=commands, git_rw=args.git_rw)
         else:
             attach_or_create(name, commands=commands)
+    return None
 
 
 if __name__ == "__main__":

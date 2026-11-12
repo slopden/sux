@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""winvm: start, stop and look at the Windows VMs made by `sux install windows-vm`.
+
+    winvm list
+    winvm status [name]
+    winvm start [name]
+    winvm stop [name]
+
+With exactly one VM the name may be left out. Which GPU a VM gets is part of
+its definition (change it with `sux install windows-vm --reconfigure`).
+
+The same file is libvirt's qemu hook (`winvm hook ...`, called through
+/etc/libvirt/hooks/qemu.d/) and the GPU handoff rehearsal (`winvm rehearse`).
+A hook never calls libvirt: the daemon is waiting for it to return.
+https://libvirt.org/hooks.html
+
+Managed by sux install windows-vm.
+"""
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import syslog
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+SYS = Path("/sys")
+PROC = Path("/proc")
+DEV = Path("/dev")
+CONF = Path("/etc/winvm")
+RUN = Path("/run/winvm")
+VIRSH = ["virsh", "-c", "qemu:///system"]
+DISPLAY_MANAGER = "display-manager.service"
+# They keep the NVIDIA device open for as long as they run.
+NVIDIA_SERVICES = ("nvidia-persistenced.service", "nvidia-powerd.service")
+VFIO = "vfio-pci"
+DISPLAY_CLASS = "0x03"
+VENDORS = {"0x10de": "nvidia", "0x8086": "intel"}
+WAIT_RELEASE_S = 20  # for the desktop to let go of the card once it is stopped
+COMMAND_TIMEOUT_S = 120
+HANDOFF = False  # set while this runs as the hook or the rehearsal
+
+
+class Refused(Exception):
+    """The VM must not start (or the rehearsal failed); the text says why."""
+
+
+def log(message):
+    """What the handoff does: to the journal (journalctl -t winvm) and stderr.
+
+    libvirt reports a failed hook's stderr to whoever started the VM.
+    """
+    if HANDOFF:
+        syslog.syslog(message)
+        print(f"winvm: {message}", file=sys.stderr, flush=True)
+
+
+def run(argv, check=True, timeout=COMMAND_TIMEOUT_S):
+    """Run a command, never without a timeout; returns (rc, output)."""
+    try:
+        r = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, check=False
+        )
+        rc, out = r.returncode, (r.stdout + r.stderr).strip()
+    except subprocess.TimeoutExpired:
+        rc, out = 124, f"timed out after {timeout}s"
+    except OSError as e:
+        rc, out = 127, str(e)
+    log(f"ran {' '.join(argv)} -> {rc}" + (f": {out}" if out and rc else ""))
+    if check and rc != 0:
+        raise Refused(f"{' '.join(argv)} failed ({rc}): {out}")
+    return rc, out
+
+
+def read(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------- VMs
+
+
+def load_conf(name):
+    """/etc/winvm/<name>.conf as a dict; None if this is not one of our VMs."""
+    path = CONF / f"{name}.conf"
+    if "/" in name or not path.is_file():
+        return None
+    conf = {"name": name}
+    for line in path.read_text().splitlines():
+        key, sep, value = line.partition("=")
+        if sep and not line.lstrip().startswith("#"):
+            conf[key.strip()] = value.strip()
+    return conf
+
+
+def vm_names():
+    return sorted(p.stem for p in CONF.glob("*.conf")) if CONF.is_dir() else []
+
+
+def pick_vm(name):
+    names = vm_names()
+    if name is None and len(names) == 1:
+        name = names[0]
+    if name is None:
+        known = ", ".join(names) or "none; make one with: sux install windows-vm"
+        raise Refused(f"which VM? ({known})")
+    conf = load_conf(name)
+    if conf is None:
+        raise Refused(f"no VM named {name} (there is: {', '.join(names) or 'none'})")
+    return conf
+
+
+def domstate(name):
+    rc, out = run([*VIRSH, "domstate", name], check=False)
+    if rc != 0:
+        hint = "are you in the libvirt group (log in again after the install)?"
+        raise Refused(f"libvirt does not answer for {name}: {out} ({hint})")
+    return out
+
+
+# ---------------------------------------------------------------- devices
+
+
+def pci(address):
+    return SYS / "bus" / "pci" / "devices" / address
+
+
+def driver(address):
+    link = pci(address) / "driver"
+    return link.resolve().name if link.exists() else ""
+
+
+def vendor(address):
+    return VENDORS.get(read(pci(address) / "vendor"), "other")
+
+
+def is_display(address):
+    return read(pci(address) / "class").startswith(DISPLAY_CLASS)
+
+
+def functions(address):
+    """Every function of the card at `address` (its audio comes along)."""
+    slot = address.rpartition(".")[0]
+    found = (SYS / "bus" / "pci" / "devices").glob(f"{slot}.*")
+    return sorted(p.name for p in found)
+
+
+def find_gpu(kind):
+    """PCI address of the display controller for `nvidia` or `igpu`, or None."""
+    want = {"nvidia": "nvidia", "igpu": "intel"}.get(kind)
+    devices = SYS / "bus" / "pci" / "devices"
+    for dev in sorted(devices.iterdir()) if devices.is_dir() else []:
+        if is_display(dev.name) and vendor(dev.name) == want:
+            return dev.name
+    return None
+
+
+def connected(address):
+    """Names of the connectors of this display controller with a display on."""
+    found = []
+    for status in sorted(pci(address).glob("drm/card*/card*-*/status")):
+        if read(status) == "connected":
+            found.append(status.parent.name.partition("-")[2])
+    return found
+
+
+def display_elsewhere(address):
+    """Whether a display is connected to another display controller."""
+    devices = SYS / "bus" / "pci" / "devices"
+    others = [d.name for d in devices.iterdir() if d.name != address]
+    return any(is_display(d) and connected(d) for d in others)
+
+
+def device_nodes(address):
+    """The /dev nodes through which a process holds this display controller."""
+    nodes = []
+    for node in pci(address).glob("drm/*"):
+        if not node.is_symlink():  # card1, renderD129
+            nodes.append(str(DEV / "dri" / node.name))
+    info = read(PROC / "driver" / "nvidia" / "gpus" / address / "information")
+    for line in info.splitlines():
+        if line.startswith("Device Minor:"):
+            nodes.append(str(DEV / f"nvidia{line.split(':')[1].strip()}"))
+            nodes.append(str(DEV / "nvidia-modeset"))
+    return nodes
+
+
+def holders(address):
+    """Processes with this display controller open: [(pid, name, node)]."""
+    nodes = set(device_nodes(address))
+    found = []
+    for proc in sorted(PROC.glob("[0-9]*"), key=lambda p: int(p.name)):
+        if int(proc.name) == os.getpid():
+            continue
+        try:
+            held = {os.readlink(fd) for fd in (proc / "fd").iterdir()} & nodes
+        except OSError:  # it exited, or it is not ours to look at
+            continue
+        for node in sorted(held):
+            found.append((int(proc.name), read(proc / "comm"), node))
+    return found
+
+
+def holders_text(found):
+    lines = [f"  pid {pid}  {name}  ({node})" for pid, name, node in found]
+    return "\n".join(lines)
+
+
+def is_active(unit):
+    return run(["systemctl", "is-active", "--quiet", unit], check=False)[0] == 0
+
+
+def stops_desktop(address):
+    """Whether handing over this card takes the host desktop down with it."""
+    return (
+        vendor(address) == "nvidia"
+        and not display_elsewhere(address)
+        and is_active(DISPLAY_MANAGER)
+    )
+
+
+# ---------------------------------------------------------------- handoff
+
+
+def state_path(name):
+    return RUN / f"{name}.json"
+
+
+def save_state(name, state):
+    RUN.mkdir(parents=True, exist_ok=True)
+    state_path(name).write_text(json.dumps(state))
+
+
+def wait_released(address):
+    """Wait for the card to be free; Refused with the list of who holds it."""
+    deadline = time.monotonic() + WAIT_RELEASE_S
+    while True:
+        found = holders(address)
+        if not found:
+            return
+        if time.monotonic() > deadline:
+            raise Refused(
+                f"{address} is in use on the host by:\n{holders_text(found)}\n"
+                "Stop these (compute jobs, containers with the GPU, a desktop "
+                "session still on this card: log out and in once) and try again."
+            )
+        time.sleep(1)
+
+
+def prepare(name, devices, conf):
+    """Make the host let go of `devices` before libvirt detaches them.
+
+    Everything that is changed is written to the state file first, so that
+    `release` can put it back whatever happens afterwards.
+    """
+    gpus = [d for d in devices if is_display(d)]
+    state = {"devices": devices, "drivers": {d: driver(d) for d in devices}}
+    state |= {"display_manager": False, "services": [], "modules": [], "vtcon": []}
+    save_state(name, state)
+    for gpu in gpus:
+        if driver(gpu) == VFIO:
+            raise Refused(f"{gpu} is already handed to a guest (bound to {VFIO})")
+        if vendor(gpu) == "intel" and connected(gpu):
+            where = ", ".join(connected(gpu))
+            raise Refused(f"a display is connected to {gpu} ({where}); not taking it")
+        if stops_desktop(gpu):
+            log(f"stopping {DISPLAY_MANAGER}: no display on another GPU, {gpu} goes")
+            state["display_manager"] = True
+            save_state(name, state)
+            run(["systemctl", "stop", DISPLAY_MANAGER])
+        if vendor(gpu) == "nvidia":
+            for unit in NVIDIA_SERVICES:
+                if is_active(unit):
+                    state["services"].append(unit)
+                    save_state(name, state)
+                    run(["systemctl", "stop", unit])
+        wait_released(gpu)
+        if vendor(gpu) == "nvidia":
+            release_console(gpu, state, name)
+            unload = conf.get("nvidia_unload", "").split()
+            for module in unload:
+                if (SYS / "module" / module).is_dir():
+                    state["modules"].append(module)
+                    save_state(name, state)
+                    run(["modprobe", "-r", module])
+        method = conf.get("reset_method", "")
+        if method and vendor(gpu) == "nvidia":
+            (pci(gpu) / "reset_method").write_text(method)
+            log(f"{gpu}: reset_method = {method}")
+
+
+def release_console(gpu, state, name):
+    """Take the text console off a framebuffer that sits on this card."""
+    on_card = [
+        fb
+        for fb in (SYS / "class" / "graphics").glob("fb*")
+        if (fb / "device").resolve() == pci(gpu).resolve()
+    ]
+    if not on_card:
+        return
+    for con in sorted((SYS / "class" / "vtconsole").glob("vtcon*")):
+        if "frame buffer" in read(con / "name") and read(con / "bind") == "1":
+            state["vtcon"].append(con.name)
+            save_state(name, state)
+            (con / "bind").write_text("0")
+            log(f"unbound {con.name} from the framebuffer on {gpu}")
+
+
+def release(name):
+    """Give the host back what `prepare` took; every step on its own."""
+    path = state_path(name)
+    try:
+        state = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    steps = []
+    for address in state.get("devices", []):
+        if not driver(address):  # libvirt has re-probed; this is the second try
+            steps.append(("probe", address))
+    steps += [("modprobe", m) for m in reversed(state.get("modules", []))]
+    steps += [("console", con) for con in state.get("vtcon", [])]
+    steps += [("start", unit) for unit in state.get("services", [])]
+    if state.get("display_manager"):
+        steps.append(("start", DISPLAY_MANAGER))
+    for what, arg in steps:
+        try:
+            if what == "probe":
+                (SYS / "bus" / "pci" / "drivers_probe").write_text(arg)
+            elif what == "modprobe":
+                run(["modprobe", arg])
+            elif what == "console":
+                (SYS / "class" / "vtconsole" / arg / "bind").write_text("1")
+            else:
+                run(["systemctl", "start", "--no-block", arg])
+        except (OSError, Refused) as e:
+            log(f"could not restore ({what} {arg}): {e}")
+    for address, was in state.get("drivers", {}).items():
+        now = driver(address)
+        if now != was:
+            log(f"{address}: driver is {now or 'none'}, was {was or 'none'}")
+    path.unlink(missing_ok=True)
+
+
+def hostdevs(xml):
+    """PCI addresses of the managed host devices in a domain's XML."""
+    found = []
+    for dev in ET.fromstring(xml).iterfind("devices/hostdev[@type='pci']"):
+        a = dev.find("source/address")
+        if a is None or dev.get("managed") != "yes":
+            continue
+        parts = [int(a.get(k, "0"), 16) for k in ("domain", "bus", "slot", "function")]
+        found.append("{:04x}:{:02x}:{:02x}.{:x}".format(*parts))
+    return found
+
+
+def cmd_hook(args):
+    """libvirt's qemu hook: <name> <operation> <sub-operation> <extra>."""
+    globals()["HANDOFF"] = True
+    name, operation, sub = args[0], args[1], args[2]
+    conf = load_conf(name)
+    if conf is None:
+        return 0  # not one of ours
+    if (operation, sub) == ("prepare", "begin"):
+        devices = hostdevs(sys.stdin.read())
+        if not devices:
+            return 0
+        try:
+            prepare(name, devices, conf)
+        except (Refused, OSError) as e:
+            log(f"{name} is not started: {e}")
+            release(name)
+            return 1
+    elif (operation, sub) == ("release", "end"):
+        release(name)
+    return 0
+
+
+def cmd_rehearse(args):
+    """Detach a card from the host and take it back, with nothing at stake."""
+    if os.geteuid() != 0:
+        raise Refused("the rehearsal needs root")
+    globals()["HANDOFF"] = True
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)  # survive a lost terminal
+    method = ""
+    if "--reset-method" in args:
+        at = args.index("--reset-method")
+        method, args = args[at + 1], args[:at] + args[at + 2 :]
+    unload = ""
+    if "--unload" in args:
+        at = args.index("--unload")
+        unload, args = args[at + 1], args[:at] + args[at + 2 :]
+    devices = args
+    before = {d: driver(d) for d in devices}
+    conf = {"reset_method": method, "nvidia_unload": unload}
+    nodes = [f"pci_{d.replace(':', '_').replace('.', '_')}" for d in devices]
+    error = None
+    try:
+        prepare("rehearsal", devices, conf)
+        for node in nodes:
+            run([*VIRSH, "nodedev-detach", node])
+        wrong = [d for d in devices if driver(d) != VFIO]
+        if wrong:
+            raise Refused(f"not on {VFIO} after the detach: {', '.join(wrong)}")
+        log(f"detached: {', '.join(devices)} are on {VFIO}")
+    except (Refused, OSError) as e:
+        error = e
+    finally:
+        for device, node in zip(devices, nodes, strict=True):
+            if driver(device) == VFIO:
+                run([*VIRSH, "nodedev-reattach", node], check=False)
+        release("rehearsal")
+    if error:
+        raise Refused(f"rehearsal failed: {error}")
+    time.sleep(2)  # the drivers bind again
+    after = {d: driver(d) for d in devices}
+    if after != before:
+        raise Refused(f"drivers did not come back: before {before}, after {after}")
+    if "nvidia" in before.values():
+        run(["nvidia-smi"])
+    log(f"rehearsal passed: {before}")
+    return 0
+
+
+# ---------------------------------------------------------------- commands
+
+
+def rdp_line(conf):
+    if conf.get("rdp") != "true":
+        return "RDP forward: off"
+    host = conf.get("rdp_host") or "<this machine's tailnet name>"
+    return f"RDP: {host}:{conf.get('rdp_port')}  (user {conf.get('user')})"
+
+
+def others_running(conf):
+    """Our other VMs that are running with the same GPU."""
+    found = []
+    for name in vm_names():
+        other = load_conf(name)
+        if name != conf["name"] and other.get("gpu") == conf.get("gpu"):
+            if domstate(name) != "shut off":
+                found.append(name)
+    return found
+
+
+def check_gpu(conf):
+    """Refuse to start when the VM's GPU is not there or not free."""
+    kind = conf.get("gpu", "none")
+    if kind == "none":
+        return None
+    address = find_gpu(kind)
+    if address is None:
+        raise Refused(f"{conf['name']} is set up with gpu = {kind}, which is not here")
+    busy = others_running(conf)
+    if busy:
+        raise Refused(
+            f"the {kind} GPU is in use by {', '.join(busy)}; "
+            f"stop it first: winvm stop {busy[0]}"
+        )
+    if driver(address) == VFIO:
+        raise Refused(f"the {kind} GPU ({address}) is held by another guest ({VFIO})")
+    return address
+
+
+def looking_glass(conf, address):
+    """Open the VM's screen in a window, where that can work."""
+    desktop = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")
+    usable = conf.get("gpu") == "nvidia" and address and display_elsewhere(address)
+    if conf.get("looking_glass") != "true" or not usable or not desktop:
+        return
+    shm = Path(conf.get("shm", ""))
+    deadline = time.monotonic() + 60
+    while not shm.exists() and time.monotonic() < deadline:
+        time.sleep(1)
+    argv = [conf.get("client", "looking-glass-client"), "-f", str(shm)]
+    argv += ["win:fullScreen=yes"] if conf.get("fullscreen") == "true" else []
+    os.execvp(argv[0], argv)
+
+
+def cmd_start(args):
+    conf = pick_vm(args[0] if args else None)
+    name = conf["name"]
+    address = None
+    if domstate(name) == "shut off":
+        address = check_gpu(conf)
+        if address and stops_desktop(address):
+            print(
+                "WARNING: no display on another GPU: the desktop on this machine "
+                "is stopped while the VM runs; its screen shows Windows."
+            )
+        rc, out = run([*VIRSH, "start", name], check=False, timeout=600)
+        if rc != 0:
+            raise Refused(f"{name} did not start:\n{out}\nmore: journalctl -t winvm")
+        print(f"{name} started")
+    else:
+        print(f"{name} is already running")
+    print(rdp_line(conf))
+    looking_glass(conf, address or find_gpu(conf.get("gpu", "none")))
+    return 0
+
+
+def cmd_stop(args):
+    conf = pick_vm(args[0] if args else None)
+    name = conf["name"]
+    if domstate(name) == "shut off":
+        print(f"{name} is not running")
+        return 0
+    run([*VIRSH, "shutdown", name])
+    print(f"{name}: asked Windows to shut down (force: virsh destroy {name})")
+    return 0
+
+
+def cmd_status(args):
+    names = [pick_vm(args[0])["name"]] if args else vm_names()
+    for name in names:
+        conf = load_conf(name)
+        print(f"{name}: {domstate(name)}, gpu {conf.get('gpu', 'none')}")
+        print(f"  {rdp_line(conf)}")
+    if not names:
+        print("no VMs; make one with: sux install windows-vm")
+    return 0
+
+
+def cmd_list(_args):
+    for name in vm_names():
+        print(name)
+    return 0
+
+
+def cmd_display_elsewhere(args):
+    """For udev: succeeds when a display is connected to another GPU."""
+    return 0 if display_elsewhere(args[0]) else 1
+
+
+COMMANDS = {
+    "list": cmd_list,
+    "status": cmd_status,
+    "start": cmd_start,
+    "stop": cmd_stop,
+    "hook": cmd_hook,
+    "rehearse": cmd_rehearse,
+    "display-elsewhere": cmd_display_elsewhere,
+}
+
+
+def main(argv):
+    syslog.openlog("winvm")
+    if not argv or argv[0] not in COMMANDS:
+        print(__doc__.strip().split("\n\nThe same file")[0])
+        return 2
+    try:
+        return COMMANDS[argv[0]](argv[1:])
+    except Refused as e:
+        print(f"winvm: {e}", file=sys.stderr)
+        return 1
+    except IndexError:
+        print(f"winvm {argv[0]}: an argument is missing", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

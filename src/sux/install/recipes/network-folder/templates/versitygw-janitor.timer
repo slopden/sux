@@ -1,0 +1,11 @@
+$header
+[Unit]
+Description=Daily cleanup of abandoned $service multipart uploads
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

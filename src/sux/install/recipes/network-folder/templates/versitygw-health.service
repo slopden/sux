@@ -1,0 +1,17 @@
+$header
+[Unit]
+Description=Restart $service if http://127.0.0.1:$port$health_path stops answering
+After=$service.service
+
+[Service]
+Type=oneshot
+# Skips while the service is (re)starting; 3 tries over ~15s before restarting.
+ExecStart=/bin/sh -c '/usr/bin/systemctl is-active -q $service || exit 0; \
+    /usr/bin/curl -fsS -o /dev/null -m 5 --retry 2 --retry-delay 5 --retry-all-errors http://127.0.0.1:$port$health_path && exit 0; \
+    echo "health check failed: http://127.0.0.1:$port$health_path; restarting $service"; exec /usr/bin/systemctl restart $service'
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

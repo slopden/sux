@@ -1,0 +1,13 @@
+$header
+[Unit]
+Description=SMB on the tailnet IPs only (relayed to smbd on loopback)
+
+[Socket]
+$listen_streams
+# Bind even before tailscale has assigned the IPs (boot).
+FreeBind=yes
+NoDelay=yes
+KeepAlive=yes
+
+[Install]
+WantedBy=sockets.target

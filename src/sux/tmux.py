@@ -102,7 +102,7 @@ def send_commands(target, commands, timeout=60.0, poll=0.1, min_wait=0.5):
                 text=True,
                 check=False,
             )
-            done = out.returncode == 0 and out.stdout.count(sentinel) >= 2
+            done = out.returncode == 0 and out.stdout.count(sentinel) >= 2  # noqa: PLR2004
             if done and now >= floor:
                 break
             if now > deadline:

@@ -1,0 +1,3 @@
+[recipe]
+name = "loop-b"
+needs = ["loop-a"]

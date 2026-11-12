@@ -4,7 +4,7 @@ all: single executable
 
 single: build/sux
 
-build/sux: $(wildcard src/sux/*.py) src/build_single_file.py
+build/sux: $(shell find src/sux -type f -not -path '*/__pycache__/*') src/build_single_file.py
 	uv run src/build_single_file.py
 	uv run ruff check --fix build/sux
 	uv run ruff format build/sux
@@ -27,6 +27,11 @@ test: build/sux
 	PYTHONPATH=src uv run pytest tests/ -v
 	build/sux --help | grep -q "sandboxing"
 	@echo "All checks passed"
+
+.PHONY: install
+install: build/sux
+	install -D -m 0755 build/sux $(HOME)/.local/bin/sux
+	@echo "Installed $(HOME)/.local/bin/sux"
 
 clean:
 	rm -rf build

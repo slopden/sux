@@ -1,0 +1,18 @@
+$header
+[Unit]
+Description=Relay tailnet SMB connections to smbd on 127.0.0.1:445
+Requires=smbd-tailnet.socket
+After=smbd-tailnet.socket smbd.service
+Wants=smbd.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=$proxy_max_connections 127.0.0.1:445
+Restart=on-failure
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service

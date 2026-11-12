@@ -1,0 +1,77 @@
+# The host side of KVM virtual machines, and no machine: QEMU, libvirt with its
+# default NAT network, UEFI firmware, an emulated TPM, and virt-manager to look
+# at a guest's screen. Recipes that make machines name this one in `needs`.
+#
+# Nothing here touches a GPU, the kernel command line or the boot loader.
+
+[recipe]
+name = "kvm"
+description = "KVM host stack: QEMU, libvirt and its default network"
+requires = { arch = ["amd64"] }
+
+[vars]
+user    = { fact = "invoking_user" }
+daemon  = "libvirtd"  # the unit Ubuntu's libvirt-daemon runs (monolithic daemon)
+network = "default"   # defined and autostarted by libvirt-daemon-config-network
+
+# Stops before the prompt on a CPU without VT-x/AMD-V, or with it switched off
+# in the firmware. The IOMMU state is only reported: plain guests do not need it.
+[[step]]
+kind = "python"
+keep = true
+function = "preflight"
+label = "preflight"
+
+[[step]]
+kind = "apt"
+packages = [
+    "qemu-system-x86",
+    "qemu-utils",             # qemu-img
+    "libvirt-daemon-system",  # libvirtd, the default network, AppArmor profiles
+    "libvirt-clients",        # virsh
+    "virtinst",
+    "virt-manager",
+    "ovmf",                   # UEFI firmware, with and without Secure Boot keys
+    "swtpm-tools",            # emulated TPM 2.0
+    "xorriso",                # builds ISO images (answer files for a guest)
+]
+
+# Members of `libvirt` manage system guests without sudo; `kvm` owns /dev/kvm.
+[[step]]
+kind = "group_member"
+user = "$user"
+group = "libvirt"
+
+[[step]]
+kind = "group_member"
+user = "$user"
+group = "kvm"
+
+[[step]]
+kind = "unit"
+name = "$daemon"
+
+[[step]]
+kind = "libvirt_network"
+name = "$network"
+
+[[status]]
+argv = ["virsh", "-r", "-c", "qemu:///system", "list", "--all"]
+
+[[status]]
+argv = ["virsh", "-r", "-c", "qemu:///system", "net-list", "--all"]
+
+[[status]]
+argv = ["virsh", "-r", "-c", "qemu:///system", "nodeinfo"]
+
+[[status]]
+argv = ["virt-host-validate", "qemu"]
+
+[[verify]]
+kind = "command"
+argv = ["virsh", "-r", "-c", "qemu:///system", "list", "--all"]
+
+[[verify]]
+kind = "python"
+function = "network_active"
+network = "$network"

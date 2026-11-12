@@ -1,0 +1,4 @@
+    <shmem name='looking-glass-$name'>
+      <model type='ivshmem-plain'/>
+      <size unit='M'>$shm_mib</size>
+    </shmem>

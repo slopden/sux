@@ -1,3 +1,5 @@
+import sys
+
 from sux.cli import main
 
-main()
+sys.exit(main())

@@ -1,0 +1,23 @@
+$header
+[Unit]
+Description=Delete multipart uploads under $root untouched for over $stale_multipart_days days
+RequiresMountsFor=$root
+
+[Service]
+Type=oneshot
+User=$user
+Group=$group
+# posix layout: <bucket>/.sgwtmp/multipart/<sha256(key)>/<uploadId>/<part>. An upload
+# dir's mtime moves with every part written, so it measures inactivity.
+ExecStart=/bin/sh -c 'for d in $root/*/.sgwtmp/multipart; do [ -d "$$$$d" ] || continue; \
+    find "$$$$d" -mindepth 2 -maxdepth 2 -type d -mtime +$stale_multipart_days -print -exec rm -rf -- {} +; \
+    find "$$$$d" -mindepth 1 -maxdepth 1 -type d -empty -delete; done'
+Nice=19
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=$root
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes

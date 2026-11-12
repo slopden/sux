@@ -1,0 +1,81 @@
+# Example recipe used only by the tests: it manages a list of sites, each with
+# its own answers, plus one index file rendered from all of them.
+
+[recipe]
+name = "sites"
+description = "Example recipe that manages a list"
+
+[instances]
+name = "site"
+key = "name"
+
+[instances.vars]
+name  = { ask = "Site name" }
+root  = { ask = "Folder", kind = "path" }
+serve = { ask = "Serve over", kind = "multi", choices = ["web", "ftp"], default = ["web"] }
+port  = { ask = "FTP port", default = 21, when = "'ftp' in serve" }
+conf  = "$root/$name"
+
+[vars]
+base     = { ask = "Where the index goes", kind = "path" }
+unit_dir = "$base/units"
+listen   = ["127.0.0.1", "::1"]
+web      = { collect = "name", when = "'web' in serve" }
+roots    = { collect = "root" }
+
+[[step]]
+kind = "file"
+when = "web"
+path = "$base/index.conf"
+owner = "$invoking_user"
+group = "$invoking_group"
+template = "index.conf"
+fragments = [
+    { name = "sites", template = "site.conf", each = "site", when = "'web' in serve" },
+    { name = "listeners", text = "listen = $host:80  # $item", each = "listen" },
+]
+
+[[step]]
+kind = "dir"
+each = "site"
+path = "$root"
+owner = "$invoking_user"
+group = "$invoking_group"
+remove_empty_tree = true
+
+[[step]]
+kind = "file"
+each = "site"
+when = "'web' in serve"
+path = "$conf.web"
+owner = "$invoking_user"
+group = "$invoking_group"
+template = "site.conf"
+
+[[step]]
+kind = "file"
+each = "site"
+when = "'ftp' in serve"
+path = "$conf.ftp"
+owner = "$invoking_user"
+group = "$invoking_group"
+template = "ftp.conf"
+
+[[step]]
+kind = "unit"
+each = "site"
+when = "'web' in serve"
+name = "web-$name.service"
+restart_on = ["$conf.web"]
+
+[[step]]
+kind = "python"
+each = "listen"
+function = "noted"
+label = "note $host"
+
+[[verify]]
+kind = "unit_active"
+each = "site"
+when = "'web' in serve"
+name = "web-$name.service"

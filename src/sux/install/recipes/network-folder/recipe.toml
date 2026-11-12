@@ -1,0 +1,366 @@
+# Share folders with other machines over SMB (Samba) and/or S3 (versitygw),
+# reachable on the chosen addresses only (by default: this machine's tailscale
+# addresses).
+#
+# SMB: Samba cannot bind a point-to-point interface like tailscale0, so smbd
+# listens on loopback only and smbd-tailnet.socket holds port 445 on the chosen
+# addresses, handing connections to systemd-socket-proxyd. NetBIOS is masked.
+# smb.conf is written before the package is installed, and the install runs
+# with service starts blocked, so the stock config never listens.
+#
+# S3: one versitygw (posix backend) service per folder, with its own port and
+# credentials; every top-level directory of the folder is a bucket. versitygw
+# follows symlinks with no containment, so it runs in an empty root with only
+# its binary and the folder bound in: links that leave the folder dangle.
+#
+# Both write as the same user and group. Neither locks against the other: do
+# not write one file through both at once.
+
+[recipe]
+name = "network-folder"
+description = "Share folders over SMB and S3, on the tailnet only"
+requires = { systemd = ">=257", arch = ["amd64"] }  # 257: PrivatePIDs=
+
+# One [[folder]] per shared folder in the answers file. Everything a folder
+# owns on this machine is named after its share name.
+[instances]
+name = "folder"
+key = "share"
+
+[instances.vars]
+root      = { ask = "Folder to share", kind = "path" }
+share     = { ask = "Share name (SMB share, S3 key id and service name)" }
+user      = { ask = "Files owned by user", fact = "invoking_user" }
+group     = { ask = "Files owned by group", fact = "invoking_group" }
+listen    = { ask = "Listen on", kind = "multi", fact = "tailscale_ips" }
+protocols = { ask = "Serve over", kind = "multi", choices = ["smb", "s3"], default = ["smb"] }
+port      = { ask = "S3 port", default = 7070, when = "'s3' in protocols" }
+service     = "versitygw-$share"
+credentials = "/etc/$service.env"
+state_dir   = "/var/lib/$service"
+chroot      = "$state_dir/root"
+unit        = "/etc/systemd/system/$service"
+
+[vars]
+header = "# Managed by sux install network-folder -- change the answers with --reconfigure, not this file."
+read_only = "no"  # "yes" rejects every write, over both protocols
+
+# SMB
+smb_conf   = "/etc/samba/smb.conf"
+smb_units  = "/etc/systemd/system"
+proxy_max_connections = 1024
+smb_shares = { collect = "share", when = "'smb' in protocols" }
+smb_users  = { collect = "user", when = "'smb' in protocols" }
+smb_listen = { collect = "listen", when = "'smb' in protocols" }
+
+# S3: versitygw, pinned; the .deb is verified before it is installed
+version    = "1.10.0"
+deb_sha256 = "d8a39e9cc7da6f17467e60795cb703cfcb29b3fe5db8227e341d90bc64727140"
+region     = "us-east-1"
+health_path = "/health"  # unauthenticated GET -> 200; masks a bucket named "health"
+umask      = "0002"      # versitygw applies dir_perms through the umask
+dir_perms  = "0775"
+file_perms = "0664"
+keep_alive = true        # better for clients that reuse connections
+concurrency = 5000       # posix backend: most concurrent operations
+max_open_files = 1048576
+access_log = false       # S3-format request log in /var/log/<service>/access.log
+# true: the service sees an empty root with only its binary and the folder.
+# false: ProtectSystem=strict (host /etc, /usr ... stay readable through links).
+minimal_root = true
+object_lock_mode = "local"  # "flock" only matters for several gateways on one fs
+health_check = true      # versitygw has no watchdog: a timer restarts it if it hangs
+# The posix backend has no lifecycle rules: a daily timer deletes multipart
+# uploads that were abandoned this many days ago.
+janitor = true
+stale_multipart_days = 7
+s3_shares = { collect = "share", when = "'s3' in protocols" }
+
+# ------------------------------------------------------------------ checks
+
+[[step]]
+kind = "python"
+each = "folder"
+keep = true
+function = "preflight"
+label = "preflight $share"
+share = "$share"
+root = "$root"
+user = "$user"
+group = "$group"
+listen = "$listen"
+protocols = "$protocols"
+port = "$port"
+service = "$service"
+smb_listen = "$smb_listen"
+health_check = "$health_check"
+
+# ------------------------------------------------------------------ files
+# Every file comes before the first unit is started, and smb.conf before the
+# Samba package.
+
+[[step]]
+kind = "file"
+when = "smb_shares"
+path = "$smb_conf"
+template = "smb.conf"
+fragments = [
+    { name = "shares", template = "smb-share.conf", each = "folder", when = "'smb' in protocols" },
+]
+
+[[step]]
+kind = "dir"
+when = "smb_shares"
+path = "$smb_units/smbd.service.d"
+
+[[step]]
+kind = "file"
+when = "smb_shares"
+path = "$smb_units/smbd.service.d/tailscale.conf"
+template = "smbd-restart.conf"
+
+[[step]]
+kind = "file"
+when = "smb_shares"
+path = "$smb_units/smbd-tailnet.socket"
+template = "smbd-tailnet.socket"
+fragments = [
+    { name = "listen_streams", text = "ListenStream=$host:445", each = "smb_listen" },
+]
+
+[[step]]
+kind = "file"
+when = "smb_shares"
+path = "$smb_units/smbd-tailnet.service"
+template = "smbd-tailnet.service"
+
+[[step]]
+kind = "apt"
+when = "smb_shares"
+packages = ["samba", "smbclient"]  # smbclient is only used by the health checks
+no_autostart = true
+
+[[step]]
+kind = "deb"
+when = "s3_shares"
+name = "versitygw"
+version = "$version"
+url = "https://github.com/versity/versitygw/releases/download/v$version/versitygw_${version}_linux_amd64.deb"
+sha256 = "$deb_sha256"
+
+# Left in the folder by object_lock_mode = "flock", if that was ever used.
+[[step]]
+kind = "dir"
+each = "folder"
+when = "'s3' in protocols"
+cleanup = true
+path = "$root/.vgwlocks"
+
+[[step]]
+kind = "secret"
+each = "folder"
+when = "'s3' in protocols"
+path = "$credentials"
+content = "$header\nROOT_ACCESS_KEY_ID=$share\nROOT_SECRET_ACCESS_KEY=$secret\n"
+
+[[step]]
+kind = "dir"
+each = "folder"
+when = "'s3' in protocols and minimal_root"
+path = "$state_dir"
+
+# The service's root: empty, systemd creates the mount points in it.
+[[step]]
+kind = "dir"
+each = "folder"
+when = "'s3' in protocols and minimal_root"
+path = "$chroot"
+remove_empty_tree = true
+
+[[step]]
+kind = "file"
+each = "folder"
+when = "'s3' in protocols"
+path = "$unit.service"
+template = "versitygw.service"
+fragments = [
+    { name = "ports", text = '    --port=$host:$port \', each = "listen" },
+    { name = "keep_alive_flag", text = '    --keep-alive \', when = "keep_alive" },
+    { name = "read_only_flag", text = '    --readonly \', when = "read_only == 'yes'" },
+    { name = "access_log_flag", text = '    --access-log=/var/log/$service/access.log \', when = "access_log" },
+    { name = "logs_directory", text = "LogsDirectory=$service", when = "access_log" },
+    { name = "no_logs_directory", text = "# access log disabled", when = "not access_log" },
+    { name = "minimal_root_view", template = "versitygw-minimal-root", when = "minimal_root" },
+    { name = "host_root_view", template = "versitygw-host-root", when = "not minimal_root" },
+]
+
+[[step]]
+kind = "file"
+each = "folder"
+when = "'s3' in protocols and health_check"
+path = "$unit-health.service"
+template = "versitygw-health.service"
+
+[[step]]
+kind = "file"
+each = "folder"
+when = "'s3' in protocols and health_check"
+path = "$unit-health.timer"
+template = "versitygw-health.timer"
+
+[[step]]
+kind = "file"
+each = "folder"
+when = "'s3' in protocols and janitor"
+path = "$unit-janitor.service"
+template = "versitygw-janitor.service"
+
+[[step]]
+kind = "file"
+each = "folder"
+when = "'s3' in protocols and janitor"
+path = "$unit-janitor.timer"
+template = "versitygw-janitor.timer"
+
+# ------------------------------------------------------------------ SMB services
+
+[[step]]
+kind = "unit"
+when = "smb_shares"
+name = "nmbd"  # NetBIOS, ports 137-139
+state = "masked"
+
+[[step]]
+kind = "python"
+each = "folder"
+when = "'smb' in protocols"
+function = "smb_password"
+label = "Samba password for $user"
+user = "$user"
+still_used_by = "$smb_users"
+
+[[step]]
+kind = "unit"
+when = "smb_shares"
+name = "smbd"
+restart_on = ["$smb_conf", "$smb_units/smbd.service.d/tailscale.conf", "apt:samba smbclient"]
+validate = ["testparm", "-s", "$smb_conf"]
+
+[[step]]
+kind = "unit"
+when = "smb_shares"
+name = "smbd-tailnet.socket"
+restart_on = ["$smb_units/smbd-tailnet.socket"]
+
+# The relay starts on the first connection.
+[[step]]
+kind = "unit"
+when = "smb_shares"
+name = "smbd-tailnet.service"
+state = "on-demand"
+restart_on = ["$smb_units/smbd-tailnet.service"]
+
+# ------------------------------------------------------------------ S3 services
+
+[[step]]
+kind = "unit"
+each = "folder"
+when = "'s3' in protocols"
+name = "$service.service"
+restart_on = ["$unit.service", "$credentials", "/usr/bin/versitygw", "deb:versitygw", "dir:$chroot"]
+
+[[step]]
+kind = "unit"
+each = "folder"
+when = "'s3' in protocols and health_check"
+name = "$service-health.timer"
+restart_on = ["$unit-health.timer"]
+
+[[step]]
+kind = "unit"
+each = "folder"
+when = "'s3' in protocols and janitor"
+name = "$service-janitor.timer"
+restart_on = ["$unit-janitor.timer"]
+
+# ------------------------------------------------------------------ diagnostics
+# Added to the status snapshot the engine logs after an apply or a failure.
+
+[[status]]
+when = "smb_shares"
+argv = ["testparm", "-s", "$smb_conf"]
+
+# ------------------------------------------------------------------ health checks
+
+[[verify]]
+kind = "unit_active"
+when = "smb_shares"
+names = ["smbd", "smbd-tailnet.socket"]
+
+[[verify]]
+kind = "listeners"
+when = "smb_shares"
+port = 445
+addresses = ["127.0.0.1", "::1", "$smb_listen"]
+
+[[verify]]
+kind = "listeners"
+when = "smb_shares"
+port = 139
+addresses = []
+
+[[verify]]
+kind = "python"
+when = "smb_shares"
+function = "smb_anonymous"
+listen = "$smb_listen"
+
+[[verify]]
+kind = "python"
+each = "folder"
+when = "'smb' in protocols"
+function = "smb_login"
+share = "$share"
+root = "$root"
+user = "$user"
+listen = "$listen"
+
+[[verify]]
+kind = "http_ok"
+each = "folder"
+when = "'s3' in protocols"
+url = "http://127.0.0.1:$port$health_path"
+
+[[verify]]
+kind = "python"
+each = "folder"
+when = "'s3' in protocols"
+function = "s3_smoke"
+credentials = "$credentials"
+listen = "$listen"
+port = "$port"
+region = "$region"
+
+[[verify]]
+kind = "python"
+each = "folder"
+when = "'s3' in protocols and minimal_root"
+function = "s3_sandbox"
+credentials = "$credentials"
+root = "$root"
+chroot = "$chroot"
+service = "$service"
+port = "$port"
+region = "$region"
+
+[[verify]]
+kind = "python"
+each = "folder"
+when = "'s3' in protocols"
+function = "s3_client_help"
+credentials = "$credentials"
+root = "$root"
+share = "$share"
+listen = "$listen"
+port = "$port"
+region = "$region"

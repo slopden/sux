@@ -1,0 +1,57 @@
+# Test fixture: three stages, and a recipe it needs.
+
+[recipe]
+name = "app"
+description = "Staged example"
+needs = ["base"]
+
+[[stage]]
+name = "one"
+title = "the first thing"
+
+[[stage]]
+name = "two"
+title = "the second thing"
+
+[[stage]]
+name = "three"
+title = "the third thing"
+confirm = true
+
+[vars]
+root = { ask = "Folder", kind = "path" }
+word = "ab"
+doubled = { hook = "twice" }
+
+[[step]]
+stage = "one"
+kind = "python"
+function = "marker"
+label = "marker one"
+path = "$root/one"
+
+[[step]]
+stage = "two"
+kind = "python"
+function = "marker"
+label = "marker two"
+path = "$root/two-$doubled"
+
+[[step]]
+stage = "three"
+kind = "python"
+function = "marker"
+label = "marker three"
+path = "$root/three"
+
+[[verify]]
+stage = "one"
+kind = "python"
+function = "healthy"
+path = "$root/one"
+
+[[verify]]
+stage = "two"
+kind = "python"
+function = "healthy"
+path = "$root/two-$doubled"

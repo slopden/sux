@@ -1,4 +1,5 @@
 import contextlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -21,8 +22,28 @@ def _start_with_commands(name, commands, *exec_cmd):
     run_tmux("attach-session", "-t", name)
 
 
-def docker_session(name, commands=None):
-    """Mount current directory into Docker container and open session."""
+def gpu_args():
+    """GPU flags for `docker run`, only when Docker has an nvidia runtime."""
+    result = subprocess.run(
+        ["docker", "info", "--format", "{{json .Runtimes}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        runtimes = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(runtimes, dict) or "nvidia" not in runtimes:
+        return []
+    return ["--gpus", "all", "--runtime=nvidia"]
+
+
+def docker_session(name, commands=None, git_rw=False):
+    """Mount current directory into Docker container and open session.
+
+    `git_rw` only applies when the container is created here.
+    """
     container_name = f"sux-{name}"
     host_dir = str(Path.cwd().resolve())
     claude_dir = str(Path.home() / ".claude")
@@ -42,7 +63,7 @@ def docker_session(name, commands=None):
         # Start filtering proxy
         proxy_sock = start_proxy(name)
 
-        git = GitState(host_dir)
+        git = GitState(host_dir, writable=git_rw)
         container_ws = git.container_ws
 
         # Pass through auth environment variables
@@ -59,9 +80,7 @@ def docker_session(name, commands=None):
                 "-d",
                 "--name",
                 container_name,
-                "--gpus",
-                "all",
-                "--runtime=nvidia",
+                *gpu_args(),
                 "-v",
                 f"{host_dir}:{container_ws}",
                 *git.git_mounts,
@@ -75,7 +94,8 @@ def docker_session(name, commands=None):
                 container_ws,
                 *env_args,
                 "sux-base",
-                *git.container_cmd,
+                "sleep",
+                "infinity",
             ],
             check=True,
         )

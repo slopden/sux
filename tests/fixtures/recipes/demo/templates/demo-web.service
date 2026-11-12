@@ -1,0 +1,9 @@
+[Unit]
+Description=Demo web server for $root
+
+[Service]
+ExecStart=/usr/bin/demo --config $conf
+User=$user
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # ///
 """Collapse src/sux/ into a single executable Python file."""
 
@@ -19,6 +19,14 @@ MODULE_ORDER = [
     "session",
     "config",
     "testing",
+    "install/log",
+    "install/shell",
+    "install/model",
+    "install/resources",
+    "install/facts",
+    "install/recipe",
+    "install/verify",
+    "install/flow",
     "cli",
 ]
 
@@ -26,11 +34,14 @@ SHEBANG = "#!/usr/bin/env -S uv run --script"
 
 UV_SCRIPT_META = """\
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # ///"""
 
 BASE_DIR = Path(__file__).resolve().parent
 SRC_DIR = BASE_DIR / "sux"
+RECIPES_DIR = SRC_DIR / "install" / "recipes"
+# install/recipe.py reads recipes from disk unless this line is replaced
+RECIPES_MARKER = "BUILTIN_RECIPES = None"
 
 _docstring_text = (SRC_DIR / "resources" / "docstring.md").read_text().strip()
 DOCSTRING = f'"""\n{_docstring_text}\n"""'
@@ -123,7 +134,31 @@ def build_constants_body():
     )
 
 
-def main():
+def read_recipes(recipes_dir):
+    """Every recipe directory as {name: {relative path: text}}."""
+    trees = {}
+    for recipe in sorted(recipes_dir.iterdir()) if recipes_dir.is_dir() else []:
+        if not (recipe / "recipe.toml").is_file():
+            continue
+        files = sorted(p for p in recipe.rglob("*") if p.is_file())
+        trees[recipe.name] = {
+            p.relative_to(recipe).as_posix(): p.read_text()
+            for p in files
+            if "__pycache__" not in p.parts
+        }
+    return trees
+
+
+def inline_recipes(body, recipes_dir):
+    """Inline the recipe tree (recipe.toml, templates, hooks.py) as strings."""
+    line = next((ln for ln in body.splitlines() if RECIPES_MARKER in ln), None)
+    if line is None:
+        msg = f"{RECIPES_MARKER!r} not found in install/recipe.py"
+        raise ValueError(msg)
+    return body.replace(line, f"BUILTIN_RECIPES = {read_recipes(recipes_dir)!r}")
+
+
+def main(out_path=None, recipes_dir=RECIPES_DIR):
     all_imports = set()
     bodies = []
 
@@ -140,6 +175,8 @@ def main():
 
         imports, body = extract_module(filepath)
         all_imports |= imports
+        if mod_name == "install/recipe":
+            body = inline_recipes(body, recipes_dir)
 
         if body:
             bodies.append(f"\n# === {mod_name} ===\n\n{body}")
@@ -159,15 +196,15 @@ def main():
         "",
         "",
         'if __name__ == "__main__":',
-        "    main()",
+        "    sys.exit(main())",
         "",
     ]
 
     output = "\n".join(parts)
 
-    build_dir = BASE_DIR.parent / "build"
-    build_dir.mkdir(exist_ok=True)
-    out_path = build_dir / "sux"
+    if out_path is None:
+        out_path = BASE_DIR.parent / "build" / "sux"
+    out_path.parent.mkdir(exist_ok=True)
     out_path.write_text(output)
     out_path.chmod(0o755)
     print(f"Built: {out_path} ({len(output)} bytes)")

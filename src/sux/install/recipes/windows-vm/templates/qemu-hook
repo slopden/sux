@@ -1,0 +1,5 @@
+#!/bin/sh
+# $header
+# libvirt calls this as: <guest> <operation> <sub-operation> <extra>, with the
+# guest's XML on stdin. A failure in "prepare" keeps the guest from starting.
+exec $winvm hook "$$@"

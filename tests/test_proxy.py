@@ -1,11 +1,15 @@
 import json
+from unittest.mock import patch
 
 from sux.proxy import (
     _owned_containers,
     check_request,
+    ensure_proxy,
+    proxy_paths,
     sanitize_binds,
     sanitize_create,
     sanitize_exec,
+    start_proxy,
 )
 
 
@@ -52,6 +56,50 @@ class TestSanitizeBinds:
     def test_normalized_workspace_passes(self):
         result = sanitize_binds(["/workspace/./src:/app"], "/home/user/proj")
         assert result == ["/home/user/proj/src:/app"]
+
+    def test_host_path_workspace_passes(self):
+        # worktrees are mounted at their host path inside the container
+        ws = "/home/user/repo/worktrees/x"
+        result = sanitize_binds([f"{ws}/src:/app:ro", f"{ws}:/all"], ws)
+        assert result == [f"{ws}/src:/app:ro", f"{ws}:/all"]
+
+    def test_host_path_traversal_blocked(self):
+        ws = "/home/user/repo/worktrees/x"
+        binds = [f"{ws}/../../.git:/mnt", f"{ws}-other:/mnt", "/home/user:/mnt"]
+        assert sanitize_binds(binds, ws) == []
+
+
+class TestProxyWorkspace:
+    def test_start_saves_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        sock, pidfile, _, wsfile = proxy_paths("t")
+        (tmp_path / "sux-proxy-t.sock").touch()
+
+        with patch("sux.proxy.os.fork", return_value=4242):
+            assert start_proxy("t") == sock
+
+        assert (tmp_path / "sux-proxy-t.pid").read_text() == "4242"
+        assert pidfile == str(tmp_path / "sux-proxy-t.pid")
+        assert (tmp_path / "sux-proxy-t.workspace").read_text() == str(tmp_path)
+        assert wsfile == str(tmp_path / "sux-proxy-t.workspace")
+
+    def test_restart_uses_saved_workspace_not_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "sux-proxy-t.pid").write_text("not a pid")
+        (tmp_path / "sux-proxy-t.workspace").write_text("/home/user/repo")
+
+        with patch("sux.proxy.start_proxy") as start:
+            ensure_proxy("t")
+
+        start.assert_called_once_with("t", "/home/user/repo")
+
+    def test_first_start_has_no_saved_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+        with patch("sux.proxy.start_proxy") as start:
+            ensure_proxy("t")
+        start.assert_called_once_with("t", None)
 
 
 class TestSanitizeCreate:

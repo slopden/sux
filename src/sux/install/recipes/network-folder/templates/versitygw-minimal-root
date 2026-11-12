@@ -1,0 +1,9 @@
+# Filesystem view: an empty dir as root, with only the binary and $root bound in
+# (+ /proc,/dev,/sys via MountAPIVFS; /proc/self/fd is needed to publish uploads).
+# systemd creates the mount points inside it when the service starts.
+# versitygw follows symlinks with no containment; here, links that leave
+# $root resolve to nothing instead of to host files.
+RootDirectory=$chroot
+MountAPIVFS=yes
+BindReadOnlyPaths=/usr/bin/versitygw
+BindPaths=$root

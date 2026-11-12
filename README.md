@@ -15,6 +15,8 @@ Then, if you have `uv` installed you can use the single-file script version of `
 curl -Lo ~/.local/bin/sux https://github.com/slopden/sux/releases/latest/download/sux && chmod +x ~/.local/bin/sux
 ```
 
+From a checkout, `make install` builds the single-file script and writes it to `~/.local/bin/sux`.
+
 `sux` is also packaged as a self-contained executable using [nuitka](https://nuitka.net/) which has no runtime dependencies:
 ```bash
 curl -Lo ~/.local/bin/sux https://github.com/slopden/sux/releases/latest/download/sux-linux-x64 && chmod +x ~/.local/bin/sux
@@ -58,6 +60,9 @@ sux -k feature
 ```
 
 
+## Git in the sandbox
+
+By default the repository's `.git` is mounted read-only in the container: the sandbox can read history and edit files, and you commit from the host. `sux -d --git-rw <name>` mounts `.git` writable so commits work inside the container, with every `hooks` directory and `config` file mounted read-only on top. That mode is best-effort, not a security boundary: a determined process can still get around the hook protection, for example by renaming a submodule or worktree git dir and creating its own in its place. In either mode the `.git` pointer files of submodules inside the workspace are writable (only the workspace root's own pointer is read-only), so look before running git on the host in a directory a sandbox has worked in. The mode is fixed when the container is created; `sux -k <name>` and start again to change it.
 
 ## Developing Sux
 

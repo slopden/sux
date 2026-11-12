@@ -1,0 +1,13 @@
+# $header
+[Unit]
+Description=RDP for the $name VM on the tailnet addresses only
+
+[Socket]
+$listen_streams
+# Bind even before tailscale has assigned the addresses (boot).
+FreeBind=yes
+NoDelay=yes
+KeepAlive=yes
+
+[Install]
+WantedBy=sockets.target

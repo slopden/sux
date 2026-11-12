@@ -1,0 +1,3 @@
+# $header
+# Type Path Mode UID GID Age Argument
+f $shm 0660 $user kvm -

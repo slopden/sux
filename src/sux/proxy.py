@@ -81,23 +81,31 @@ def _parse_segments(path):
     return segments
 
 
+def _is_under(path, root):
+    return path == root or path.startswith(root + "/")
+
+
 def sanitize_binds(binds, workspace_host):
-    """Filter bind mounts to only allow /workspace-relative paths."""
+    """Filter bind mounts to only allow paths inside the workspace.
+
+    The workspace is `/workspace` in the container, or for worktrees the
+    same absolute path as on the host.
+    """
     if not binds:
         return []
     result = []
     for bind in binds:
         parts = bind.split(":")
         src = parts[0]
+        normalized = posixpath.normpath(src)
         if not src.startswith("/"):
             result.append(bind)
-        elif src == "/workspace" or src.startswith("/workspace/"):
-            normalized = posixpath.normpath(src)
-            if normalized == "/workspace" or normalized.startswith("/workspace/"):
-                parts[0] = workspace_host + normalized[len("/workspace") :]
-                result.append(":".join(parts))
-            else:
-                print(f"PROXY: blocked traversal: {bind}", file=sys.stderr)
+        elif _is_under(normalized, "/workspace"):
+            parts[0] = workspace_host + normalized[len("/workspace") :]
+            result.append(":".join(parts))
+        elif _is_under(normalized, workspace_host):
+            parts[0] = normalized
+            result.append(":".join(parts))
         else:
             print(f"PROXY: blocked bind mount: {bind}", file=sys.stderr)
     return result
@@ -372,16 +380,20 @@ def proxy_serve(sock_path, workspace_host):  # noqa: C901, PLR0915
 
 
 def proxy_paths(name):
-    """Return (sock, pid, log) paths for a proxy."""
+    """Return (sock, pid, log, workspace) paths for a proxy."""
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "/tmp")
     base = f"{runtime_dir}/sux-proxy-{name}"
-    return f"{base}.sock", f"{base}.pid", f"{base}.log"
+    return f"{base}.sock", f"{base}.pid", f"{base}.log", f"{base}.workspace"
 
 
-def start_proxy(name):
-    """Fork a child process running the filtering proxy."""
-    sock, pidfile, logfile = proxy_paths(name)
-    workspace_host = str(Path.cwd().resolve())
+def start_proxy(name, workspace_host=None):
+    """Fork a child process running the filtering proxy.
+
+    The workspace defaults to the current directory and is saved beside the
+    pid file so a restart from another directory keeps the same one.
+    """
+    sock, pidfile, logfile, wsfile = proxy_paths(name)
+    workspace_host = workspace_host or str(Path.cwd().resolve())
 
     pid = os.fork()
     if pid == 0:
@@ -400,6 +412,7 @@ def start_proxy(name):
 
     # Parent: save PID and wait for socket
     Path(pidfile).write_text(str(pid))
+    Path(wsfile).write_text(workspace_host)
     for _ in range(50):
         if Path(sock).exists():
             return sock
@@ -412,19 +425,19 @@ def start_proxy(name):
 
 def stop_proxy(name):
     """Stop the proxy and clean up."""
-    sock, pidfile, logfile = proxy_paths(name)
+    sock, pidfile, logfile, wsfile = proxy_paths(name)
 
     if Path(pidfile).exists():
         with contextlib.suppress(ValueError, ProcessLookupError, PermissionError):
             os.kill(int(Path(pidfile).read_text().strip()), signal.SIGTERM)
 
-    for f in (pidfile, sock, logfile):
+    for f in (pidfile, sock, logfile, wsfile):
         Path(f).unlink(missing_ok=True)
 
 
 def ensure_proxy(name):
     """Ensure proxy is running, (re)starting if needed."""
-    _, pidfile, _ = proxy_paths(name)
+    _, pidfile, _, wsfile = proxy_paths(name)
     if Path(pidfile).exists():
         try:
             os.kill(int(Path(pidfile).read_text().strip()), 0)
@@ -432,4 +445,5 @@ def ensure_proxy(name):
             pass
         else:
             return
-    start_proxy(name)
+    saved = Path(wsfile)
+    start_proxy(name, saved.read_text() if saved.exists() else None)

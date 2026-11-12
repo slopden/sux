@@ -1,0 +1,64 @@
+# Example recipe used only by the tests. Every path it manages sits under the
+# answers, so a test can point it at a temporary directory.
+
+[recipe]
+name = "demo"
+description = "Example recipe for the tests"
+requires = { arch = ["amd64", "arm64"] }
+
+[vars]
+root     = { ask = "Folder to serve", kind = "path" }
+unit_dir = { ask = "Unit directory", kind = "path", default = "/etc/systemd/system" }
+user     = { ask = "Run as user", fact = "invoking_user" }
+features = { ask = "Features", kind = "multi", choices = ["web", "metrics"], default = ["web"] }
+level    = { ask = "Log level", kind = "choice", choices = ["info", "debug"], default = "info" }
+tls      = { ask = "Serve over TLS", kind = "bool", default = false }
+group    = { fact = "invoking_group" }
+port     = 8080
+listen   = ["127.0.0.1", "::1"]
+conf     = "$root/etc/demo.conf"
+
+[[step]]
+kind = "dir"
+path = "$root/etc"
+owner = "$user"
+group = "$group"
+
+[[step]]
+kind = "file"
+path = "$conf"
+owner = "$user"
+group = "$group"
+template = "demo.conf"
+fragments = [
+    { name = "listeners", template = "listen.conf", each = "listen" },
+    { name = "metrics", template = "metrics.conf", when = "'metrics' in features" },
+]
+
+[[step]]
+kind = "file"
+when = "'web' in features"
+path = "$unit_dir/demo-web.service"
+owner = "$user"
+group = "$group"
+template = "demo-web.service"
+
+[[step]]
+kind = "unit"
+when = "'web' in features"
+name = "demo-web.service"
+restart_on = ["$conf", "$unit_dir/demo-web.service"]
+
+[[step]]
+kind = "python"
+function = "marker"
+path = "$root/marker"
+
+[[verify]]
+kind = "unit_active"
+when = "'web' in features"
+name = "demo-web.service"
+
+[[verify]]
+kind = "python"
+function = "check_conf"

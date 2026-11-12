@@ -1,0 +1,19 @@
+# Test fixture: a recipe other recipes need.
+
+[recipe]
+name = "base"
+description = "What app needs"
+
+[vars]
+root = { ask = "Folder", kind = "path" }
+
+[[step]]
+kind = "python"
+function = "marker"
+label = "base marker"
+path = "$root/base"
+
+[[verify]]
+kind = "python"
+function = "healthy"
+path = "$root/base"

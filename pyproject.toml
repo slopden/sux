@@ -2,7 +2,7 @@
 name = "sux"
 version = "0.1.0"
 description = "A tmux wrapper with sandboxing and screen keybindings"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 
 [project.scripts]
@@ -19,7 +19,7 @@ packages = ["src/sux"]
 dev = ["ruff", "nuitka", "patchelf", "zstandard", "pytest"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
@@ -40,6 +40,8 @@ ignore = [
 "src/sux/constants.py" = ["E501"]
 "build/*" = ["E501", "INP001"]
 "tests/*" = ["INP001", "PLR2004"]
+# hooks.py is run by the engine, which provides Action, Probe, Fail ... as globals
+"src/sux/install/recipes/*/hooks.py" = ["F821", "INP001"]
 
 [tool.ruff.format]
 quote-style = "double"
