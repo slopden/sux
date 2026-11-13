@@ -446,7 +446,7 @@ def resolve_instances(spec, values, saved, ask, menu):
     return answers, unanswered
 
 
-def resolve(  # noqa: PLR0913
+def resolve(  # noqa: PLR0913, PLR0917
     recipe, facts, saved, ask=None, reconfigure=False, menu=None
 ):
     """Work out every variable, asking the questions that have no saved answer.

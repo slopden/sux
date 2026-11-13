@@ -258,7 +258,7 @@ def smb_login(ctx, entry):
 # ---------------------------------------------------------------- S3 checks
 
 
-def sigv4_headers(method, url, access, secret, region, headers=None, now=None):  # noqa: PLR0913
+def sigv4_headers(method, url, access, secret, region, headers=None, now=None):  # noqa: PLR0913, PLR0917
     """Headers that sign one body-less S3 request (AWS Signature Version 4).
 
     `url` is used as written: its path must be percent-encoded already.
@@ -293,7 +293,7 @@ def sigv4_headers(method, url, access, secret, region, headers=None, now=None): 
     return signed
 
 
-def _s3(entry, creds, method, path="/", query=None, headers=None, host="127.0.0.1"):  # noqa: PLR0913
+def _s3(entry, creds, method, path="/", query=None, headers=None, host="127.0.0.1"):  # noqa: PLR0913, PLR0917
     """One signed path-style request: (HTTP status, body)."""
     url = f"http://{host}:{entry['port']}" + urllib.parse.quote(path, safe="/-_.~")
     if query:

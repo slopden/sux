@@ -16,11 +16,18 @@ build-backend = "hatchling.build"
 packages = ["src/sux"]
 
 [dependency-groups]
-dev = ["ruff", "nuitka", "patchelf", "zstandard", "pytest"]
+dev = [
+    "ruff>=0.17.5",
+    "nuitka>=4.3.5",
+    "patchelf>=0.19.3.0",
+    "zstandard>=0.25.0",
+    "pytest>=9.2.0",
+]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+extend-exclude = ["src/worktrees"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -34,6 +41,7 @@ ignore = [
     "COM812",  # trailing comma conflicts with formatter
     "ISC001",  # implicit string concat conflicts with formatter
     "FBT",     # boolean trap
+    "CPY001",  # copyright headers: covered by LICENSE
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -420,7 +420,7 @@ class Prepared:
         return [r for unit in self.units for r in unit.resources]
 
 
-def prepare(recipe, sh, facts, stamp, opts, needed_by=""):  # noqa: PLR0913
+def prepare(recipe, sh, facts, stamp, opts, needed_by=""):  # noqa: PLR0913, PLR0917
     """A recipe's units: one per stage, or one for all of it. None: questions."""
     remove = opts["remove"]
     asking = opts if not needed_by else opts | {"reconfigure": False}
