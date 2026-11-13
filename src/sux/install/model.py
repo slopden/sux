@@ -1,8 +1,8 @@
 import shlex
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+lazy from collections.abc import Callable
 
 from sux.install.log import Fail, say
 from sux.install.render import Check, Note

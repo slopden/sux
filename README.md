@@ -10,7 +10,7 @@ A tmux wrapper with sandboxing and screen keybindings that mounts your Claude se
 
 You'll have to install `tmux` and `docker` yourself to get anything out of this.
 
-Then, if you have `uv` installed you can use the single-file script version of `sux` which is easy to edit locally and much smaller:
+Then, if you have `uv` installed you can use the single-file script version of `sux` which is easy to edit locally and much smaller (`uv` fetches Python >= 3.15 on first run):
 ```bash
 curl -Lo ~/.local/bin/sux https://github.com/slopden/sux/releases/latest/download/sux && chmod +x ~/.local/bin/sux
 ```
@@ -68,6 +68,6 @@ By default the repository's `.git` is mounted read-only in the container: the sa
 
 ```bash
 make single       # build/sux (single-file script)
-make executable   # build/sux-bin (nuitka binary)
+make executable   # build/sux-bin (nuitka binary; pulls the `binary` dep group)
 make test         # lint + 72 tests
 ```

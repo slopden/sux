@@ -115,7 +115,7 @@ def sanitize_create(body, workspace_host):
     """Strip dangerous options from container create requests."""
     try:
         data = json.loads(body)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return body
     clean = {k: v for k, v in data.items() if k in ALLOWED_TOP_LEVEL}
     hc = data.get("HostConfig")
@@ -134,7 +134,7 @@ def sanitize_exec(body):
     """Strip dangerous options from exec create requests."""
     try:
         data = json.loads(body)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return body
     clean = {k: v for k, v in data.items() if k in ALLOWED_EXEC}
     return json.dumps(clean).encode()
@@ -197,7 +197,7 @@ def record_created_container(resp_body):
         cid = data.get("Id", "")
         if cid:
             _owned_containers.add(cid)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         pass
 
 
@@ -227,7 +227,7 @@ def proxy_serve(sock_path, workspace_host):  # noqa: C901, PLR0915
             while data := await src.read(65536):
                 dst.write(data)
                 await dst.drain()
-        except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
+        except ConnectionResetError, BrokenPipeError, asyncio.CancelledError:
             pass
         finally:
             with contextlib.suppress(Exception):
@@ -441,7 +441,7 @@ def ensure_proxy(name):
     if Path(pidfile).exists():
         try:
             os.kill(int(Path(pidfile).read_text().strip()), 0)
-        except (ValueError, ProcessLookupError):
+        except ValueError, ProcessLookupError:
             pass
         else:
             return

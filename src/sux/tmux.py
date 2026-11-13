@@ -83,9 +83,9 @@ def send_commands(target, commands, timeout=60.0, poll=0.1, min_wait=0.5):
             time.sleep(min_wait)
             continue
 
-        sentinel = f"__SUX_DONE_{uuid.uuid4().hex[:8]}_{i}__"
+        done_marker = f"__SUX_DONE_{uuid.uuid4().hex[:8]}_{i}__"
         escaped = cmd.replace("'", "'\\''")
-        line = f"eval '{escaped}' ; echo {sentinel}"
+        line = f"eval '{escaped}' ; echo {done_marker}"
         subprocess.run(
             ["tmux", "send-keys", "-t", target, line, "Enter"],
             check=True,
@@ -102,7 +102,7 @@ def send_commands(target, commands, timeout=60.0, poll=0.1, min_wait=0.5):
                 text=True,
                 check=False,
             )
-            done = out.returncode == 0 and out.stdout.count(sentinel) >= 2  # noqa: PLR2004
+            done = out.returncode == 0 and out.stdout.count(done_marker) >= 2  # noqa: PLR2004
             if done and now >= floor:
                 break
             if now > deadline:

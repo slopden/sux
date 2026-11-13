@@ -54,7 +54,7 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          uv run -m nuitka --standalone --onefile \
+          uv run --group binary -m nuitka --standalone --onefile \
             --output-dir=build \
             --output-filename=${{ matrix.artifact }}${{ matrix.ext }} \
             --include-package=sux \

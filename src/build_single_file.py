@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.15"
 # ///
 """Collapse src/sux/ into a single executable Python file."""
 
@@ -36,7 +36,7 @@ SHEBANG = "#!/usr/bin/env -S uv run --script"
 
 UV_SCRIPT_META = """\
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.15"
 # ///"""
 
 BASE_DIR = Path(__file__).resolve().parent

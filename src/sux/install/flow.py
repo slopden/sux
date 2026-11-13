@@ -7,10 +7,10 @@ import time
 import tomllib
 import traceback
 from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+lazy from collections.abc import Callable
 
 from sux.install.facts import Facts
 from sux.install.log import Fail, RunLog, say
@@ -245,7 +245,7 @@ def choose(can_apply, unknown, input_fn=input):
     start = "reprobe" if unknown and not can_apply else "exit"
     try:
         return pick([*options, "exit"], input_fn, int(unknown), start)
-    except (EOFError, KeyboardInterrupt):
+    except EOFError, KeyboardInterrupt:
         return "exit"
 
 

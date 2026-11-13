@@ -57,7 +57,7 @@ def fact_magicdns(sh):
     r = sh.probe(["tailscale", "status", "--self", "--peers=false", "--json"])
     try:
         return json.loads(r.stdout)["Self"]["DNSName"].rstrip(".")
-    except (KeyError, ValueError, TypeError):
+    except KeyError, ValueError, TypeError:
         return ""
 
 
