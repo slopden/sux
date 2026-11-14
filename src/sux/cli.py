@@ -1,10 +1,11 @@
 import argparse
+import os
 import sys
 
 from sux.config import apply_config
 from sux.constants import APT_PROFILES
 from sux.docker import list_sessions
-from sux.git import ensure_worktree
+from sux.git import GitRepository
 from sux.install.flow import install_main
 from sux.session import attach_or_create, docker_session, kill_session
 from sux.testing import config_test
@@ -26,7 +27,8 @@ Modes:
             is best-effort, not a security boundary.
 
   worktree  `sux -w <name>` creates a git worktree for branch <name> in
-            worktrees/<name> at the root of the repository, or reuses the
+            worktrees/<name> at the root of the checkout (for a submodule,
+            the submodule's checkout; never inside .git), or reuses the
             worktree that branch is already checked out in, initialises
             its submodules and opens a tmux session in it.
 
@@ -152,7 +154,7 @@ def main():  # noqa: C901, PLR0912, PLR0915
                 parser.error("-d/-w require a session name")
             attach_or_create()
         elif args.worktree:
-            ensure_worktree(name)
+            os.chdir(GitRepository.here().worktree(name).checkout)
             if args.docker:
                 docker_session(name, commands=commands, git_rw=args.git_rw)
             else:

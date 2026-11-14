@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from sux.docker import ensure_docker_image
-from sux.git import GitState
+from sux.git import GitRepository
 from sux.proxy import ensure_proxy, start_proxy, stop_proxy
 from sux.tmux import run_tmux, send_commands, tmux_running, wait_for_prompt
 from sux.utils import host_username
@@ -63,8 +63,10 @@ def docker_session(name, commands=None, git_rw=False):
         # Start filtering proxy
         proxy_sock = start_proxy(name)
 
-        git = GitState(host_dir, writable=git_rw)
-        container_ws = git.container_ws
+        repo = GitRepository.at(host_dir)
+        container_ws, git_mounts = (
+            repo.docker_mounts(git_rw) if repo else ("/workspace", [])
+        )
 
         # Pass through auth environment variables
         env_args = []
@@ -83,7 +85,7 @@ def docker_session(name, commands=None, git_rw=False):
                 *gpu_args(),
                 "-v",
                 f"{host_dir}:{container_ws}",
-                *git.git_mounts,
+                *git_mounts,
                 "-v",
                 f"{claude_dir}:/home/{user}/.claude",
                 "-v",

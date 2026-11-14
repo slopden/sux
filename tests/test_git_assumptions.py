@@ -4,6 +4,8 @@ Each test runs plain git, no sux code, so a git upgrade that changes one of
 these shows up here first.
 """
 
+from pathlib import Path
+
 from tests.conftest import GLOBAL_CONFIG, git, out
 
 NO_FILE_PROTOCOL = GLOBAL_CONFIG.split("[protocol")[0]
@@ -158,3 +160,25 @@ def test_file_protocol_can_be_allowed_for_one_command(repos, git_env):
     assert shared_config(repos) == before
     assert git_env.read_text() == NO_FILE_PROTOCOL
     assert "protocol.file" not in out(sub, "config", "--local", "--list")
+
+
+def test_submodule_main_worktree_is_reported_as_its_git_dir(repos):
+    """`GitRepository.main_checkout` exists because of this.
+
+    `worktree list` strips `/.git` from the common dir and ignores
+    `core.worktree`, so a submodule's main worktree comes back as its git dir
+    under the superproject's `.git/modules`. Asking git from the common dir
+    honours `core.worktree`; for an ordinary `.git` it fails.
+    """
+    sub = repos.main / "sub"
+    common = Path(
+        out(sub, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    ).resolve()
+    assert common == repos.main / ".git" / "modules" / "sub"
+
+    first = out(sub, "worktree", "list", "--porcelain").splitlines()[0]
+    assert first == f"worktree {common}"
+
+    assert out(common, "rev-parse", "--show-toplevel") == str(sub)
+    plain = git(repos.main / ".git", "rev-parse", "--show-toplevel", check=False)
+    assert plain.returncode != 0

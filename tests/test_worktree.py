@@ -1,11 +1,24 @@
-"""`ensure_worktree` and `init_submodules` against real temporary repos."""
+"""`GitRepository` worktrees and submodules against real temporary repos."""
 
+import os
 from pathlib import Path
 
 import pytest
 
-from sux.git import GitState, _resolve_url, ensure_worktree, init_submodules
+from sux.git import GitRepository, _resolve_url
 from tests.conftest import GLOBAL_CONFIG, commit_file, git, out
+
+
+def open_worktree(name):
+    """What `sux -w <name>` does: create or reuse, then step into it."""
+    worktree = GitRepository.here().worktree(name).checkout
+    os.chdir(worktree)
+    return worktree
+
+
+def mounts(path, writable=False):
+    """(container workspace, git `-v` args) for a checkout root."""
+    return GitRepository.at(path).docker_mounts(writable)
 
 
 def shared_config(repos):
@@ -32,7 +45,7 @@ class TestEnsureWorktree:
         monkeypatch.chdir(subdir)
         before = shared_config(repos)
 
-        ensure_worktree("feature")
+        open_worktree("feature")
 
         worktree = repos.main / "worktrees" / "feature"
         assert Path.cwd() == worktree
@@ -49,23 +62,25 @@ class TestEnsureWorktree:
         assert str(repos.poison) in err
         assert "submodule sync sub" in err
 
-        # the worktrees directory does not show up as untracked
-        assert "worktrees" not in out(repos.main, "status", "--porcelain")
+        # the worktrees directory ignores itself; nothing is written in .git
+        assert (repos.main / "worktrees" / ".gitignore").read_text() == "*\n"
+        assert out(repos.main, "status", "--porcelain") == ""
+        assert not (repos.main / ".git" / "info" / "exclude").exists() or (
+            "worktrees" not in (repos.main / ".git" / "info" / "exclude").read_text()
+        )
 
     def test_rerun_reuses_and_resumes(self, repos, monkeypatch, capfd):
         monkeypatch.chdir(repos.main)
-        ensure_worktree("feature")
+        open_worktree("feature")
         worktree = repos.main / "worktrees" / "feature"
-        exclude = (repos.main / ".git" / "info" / "exclude").read_text()
 
         # from inside the worktree: no nested worktrees/ directory
-        ensure_worktree("feature")
+        open_worktree("feature")
 
         assert Path.cwd() == worktree
         assert not (worktree / "worktrees").exists()
         assert f"Using worktree: {worktree}" in capfd.readouterr().out
-        assert (repos.main / ".git" / "info" / "exclude").read_text() == exclude
-        assert exclude.count("/worktrees/") == 1
+        assert (repos.main / "worktrees" / ".gitignore").read_text() == "*\n"
         assert_submodules_ready(repos, worktree)
 
     def test_branch_checked_out_elsewhere_is_reused(self, repos, monkeypatch):
@@ -73,7 +88,7 @@ class TestEnsureWorktree:
         git(repos.main, "worktree", "add", str(elsewhere), "-b", "other")
         monkeypatch.chdir(repos.main)
 
-        ensure_worktree("other")
+        open_worktree("other")
 
         assert Path.cwd() == elsewhere
         assert not (repos.main / "worktrees").exists()
@@ -84,7 +99,7 @@ class TestEnsureWorktree:
         git(repos.main, "branch", "old", first)
         monkeypatch.chdir(repos.main)
 
-        ensure_worktree("old")
+        open_worktree("old")
 
         worktree = repos.main / "worktrees" / "old"
         assert out(worktree, "rev-parse", "HEAD") == first
@@ -95,7 +110,7 @@ class TestEnsureWorktree:
         git(repos.main, "tag", "v1", first)
         monkeypatch.chdir(repos.main)
 
-        ensure_worktree("v1")
+        open_worktree("v1")
 
         worktree = repos.main / "worktrees" / "v1"
         assert out(worktree, "symbolic-ref", "HEAD") == "refs/heads/v1"
@@ -106,7 +121,7 @@ class TestEnsureWorktree:
     def test_outside_a_repo_exits_with_a_reason(self, tmp_path, git_env, monkeypatch):  # noqa: ARG002
         monkeypatch.chdir(tmp_path)
         with pytest.raises(SystemExit) as exit_info:
-            ensure_worktree("feature")
+            open_worktree("feature")
         assert "not inside a git repository" in str(exit_info.value.code)
 
     def test_failed_worktree_add_exits_with_a_reason(self, repos, monkeypatch):
@@ -115,7 +130,7 @@ class TestEnsureWorktree:
         (repos.main / "worktrees" / "feature").write_text("in the way")
         monkeypatch.chdir(repos.main)
         with pytest.raises(SystemExit) as exit_info:
-            ensure_worktree("feature")
+            open_worktree("feature")
         assert "could not create worktree" in str(exit_info.value.code)
 
 
@@ -128,7 +143,7 @@ class TestInitSubmodules:
         before = shared_config(repos)
         monkeypatch.chdir(repos.main)
 
-        ensure_worktree("feature")
+        open_worktree("feature")
 
         assert_submodules_ready(repos, repos.main / "worktrees" / "feature")
         assert shared_config(repos) == before
@@ -141,7 +156,7 @@ class TestInitSubmodules:
         worktree = repos.main / "worktrees" / "wt"
         git(repos.main, "worktree", "add", str(worktree), "-b", "wt")
         with pytest.raises(SystemExit) as exit_info:
-            init_submodules(worktree, repos.tmp / "no-main-checkout")
+            GitRepository.at(worktree).init_submodules(repos.tmp / "no-main-checkout")
         assert "could not initialise submodule sub" in str(exit_info.value.code)
 
     def test_missing_url_is_recorded_like_submodule_init(self, repos, monkeypatch):
@@ -149,7 +164,7 @@ class TestInitSubmodules:
         git(repos.main, "config", "--unset", "submodule.active")
         monkeypatch.chdir(repos.main)
 
-        ensure_worktree("feature")
+        open_worktree("feature")
 
         worktree = repos.main / "worktrees" / "feature"
         assert_submodules_ready(repos, worktree)
@@ -159,7 +174,7 @@ class TestInitSubmodules:
 
     def test_suggested_sync_repairs_the_config(self, repos, monkeypatch):
         monkeypatch.chdir(repos.main)
-        ensure_worktree("feature")
+        open_worktree("feature")
         worktree = repos.main / "worktrees" / "feature"
 
         git(worktree, "submodule", "sync", "sub")
@@ -172,7 +187,7 @@ class TestInitSubmodules:
         commit_file(repos.main, "other.txt", "stale gitmodules entry")
         monkeypatch.chdir(repos.main)
 
-        ensure_worktree("feature")
+        open_worktree("feature")
 
         assert_submodules_ready(repos, repos.main / "worktrees" / "feature")
 
@@ -202,31 +217,31 @@ class TestResolveUrl:
         )
 
 
-class TestGitStateRealRepos:
+class TestDockerMountsRealRepos:
     def test_worktree_with_submodules(self, repos, monkeypatch):
         monkeypatch.chdir(repos.main)
-        ensure_worktree("feature")
+        open_worktree("feature")
         worktree = repos.main / "worktrees" / "feature"
         top = repos.main / ".git"
 
-        readonly = GitState(str(worktree))
-        assert readonly.container_ws == str(worktree)
-        assert readonly.git_mounts == [
+        ws, readonly = mounts(worktree)
+        assert ws == str(worktree)
+        assert readonly == [
             "-v",
             f"{top}:{top}:ro",
             "-v",
             f"{worktree}/.git:{worktree}/.git:ro",
         ]
 
-        state = GitState(str(worktree), writable=True)
+        ws, args = mounts(worktree, writable=True)
 
-        assert state.container_ws == str(worktree)
-        mounts = state.git_mounts[1::2]
-        assert state.git_mounts[0::2] == ["-v"] * len(mounts)
-        assert mounts[0] == f"{top}:{top}"
+        assert ws == str(worktree)
+        volumes = args[1::2]
+        assert args[0::2] == ["-v"] * len(volumes)
+        assert volumes[0] == f"{top}:{top}"
         # everything after the read-write .git is a read-only identity overlay
-        overlays = [mount.removesuffix(":ro").split(":") for mount in mounts[1:]]
-        assert all(mount.endswith(":ro") for mount in mounts[1:])
+        overlays = [mount.removesuffix(":ro").split(":") for mount in volumes[1:]]
+        assert all(mount.endswith(":ro") for mount in volumes[1:])
         assert all(src == dst for src, dst in overlays)
         assert overlays.pop() == [f"{worktree}/.git"] * 2
         protected = {Path(src).relative_to(top).as_posix() for src, _ in overlays}
@@ -249,26 +264,64 @@ class TestGitStateRealRepos:
         sub = repos.main / "sub"
         top = repos.main / ".git"
         pointer = ["-v", f"{sub}/.git:{sub}/.git:ro"]
-        assert GitState(str(sub)).git_mounts == ["-v", f"{top}:{top}:ro", *pointer]
+        assert mounts(sub)[1] == ["-v", f"{top}:{top}:ro", *pointer]
 
-        state = GitState(str(sub), writable=True)
-        assert state.container_ws == str(sub)
-        assert state.git_mounts[:2] == ["-v", f"{top}:{top}"]
-        assert state.git_mounts[-2:] == pointer
-        assert f"{top}/modules/sub/hooks:{top}/modules/sub/hooks:ro" in state.git_mounts
+        ws, args = mounts(sub, writable=True)
+        assert ws == str(sub)
+        assert args[:2] == ["-v", f"{top}:{top}"]
+        assert args[-2:] == pointer
+        assert f"{top}/modules/sub/hooks:{top}/modules/sub/hooks:ro" in args
 
     def test_plain_repo_with_submodules(self, repos):
         top = repos.main / ".git"
-        assert GitState(str(repos.main)).git_mounts == [
-            "-v",
-            f"{top}:/workspace/.git:ro",
-        ]
+        assert mounts(repos.main) == ("/workspace", ["-v", f"{top}:/workspace/.git:ro"])
 
-        state = GitState(str(repos.main), writable=True)
-        assert state.container_ws == "/workspace"
-        assert state.git_mounts[:2] == ["-v", f"{top}:/workspace/.git"]
-        assert f"{top}/config:/workspace/.git/config:ro" in state.git_mounts
+        ws, args = mounts(repos.main, writable=True)
+        assert ws == "/workspace"
+        assert args[:2] == ["-v", f"{top}:/workspace/.git"]
+        assert f"{top}/config:/workspace/.git/config:ro" in args
         assert (
             f"{top}/modules/sub/modules/nested/hooks"
             ":/workspace/.git/modules/sub/modules/nested/hooks:ro"
-        ) in state.git_mounts
+        ) in args
+
+
+class TestNeverInsideGit:
+    def test_submodule_worktree_goes_in_its_checkout(self, repos, monkeypatch):
+        """In a submodule `worktree list` names the git dir as the main worktree."""
+        sub = repos.main / "sub"
+        common = repos.main / ".git" / "modules" / "sub"
+        info = sorted((common / "info").rglob("*"))
+        deep = sub / "deep" / "er"
+        deep.mkdir(parents=True)
+        monkeypatch.chdir(deep)
+
+        worktree = open_worktree("feature")
+
+        assert worktree == sub / "worktrees" / "feature"
+        assert ".git" not in worktree.parts
+        assert not (common / "worktrees" / "feature" / "sub.txt").exists()
+        assert out(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "feature"
+        assert (worktree / "nested" / "nested.txt").exists()
+        # no git state leaks into the checkout, nothing shows up anywhere
+        assert out(worktree, "status", "--porcelain") == ""
+        assert out(sub, "status", "--porcelain") == ""
+        assert out(repos.main, "status", "--porcelain") == ""
+        assert sorted((common / "info").rglob("*")) == info
+
+        # rerun from inside the worktree reuses it
+        assert open_worktree("feature") == worktree
+
+    def test_worktree_inside_a_git_dir_is_refused(self, repos, monkeypatch):
+        """The layout an earlier sux made: checkout and admin dir in one place."""
+        sub = repos.main / "sub"
+        bad = repos.main / ".git" / "modules" / "sub" / "worktrees" / "bad"
+        git(sub, "worktree", "add", str(bad), "-b", "bad")
+        monkeypatch.chdir(sub)
+
+        with pytest.raises(SystemExit) as exit_info:
+            open_worktree("bad")
+
+        reason = str(exit_info.value.code)
+        assert f"worktree {bad} is inside a git dir" in reason
+        assert "git worktree remove --force" in reason

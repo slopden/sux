@@ -14,7 +14,8 @@ Modes:
             is best-effort, not a security boundary.
 
   worktree  `sux -w <name>` creates a git worktree for branch <name> in
-            worktrees/<name> at the root of the repository, or reuses the
+            worktrees/<name> at the root of the checkout (for a submodule,
+            the submodule's checkout; never inside .git), or reuses the
             worktree that branch is already checked out in, initialises
             its submodules and opens a tmux session in it.
 
